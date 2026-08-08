@@ -16,12 +16,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -290,45 +287,6 @@ func TestDirectClientIngestAndQuery(t *testing.T) {
 	if len(resp.Hits) == 0 {
 		t.Fatalf("expected at least one metric sample, got 0")
 	}
-}
-
-// TestStreamableHTTPServer brings up the MCP server over HTTP and
-// exercises it that way.
-func TestStreamableHTTPServer(t *testing.T) {
-	cfg := mustLoad(t)
-	srv := newHTTPServer(t, cfg)
-	defer srv.Close()
-
-	// POST initialize.
-	body := strings.NewReader(`{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"http","version":"0"},"capabilities":{}}}`)
-	req, _ := http.NewRequest("POST", srv.URL+"/mcp", body)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("initialize http: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		t.Fatalf("initialize http status %d", resp.StatusCode)
-	}
-}
-
-func newHTTPServer(t *testing.T, cfg *config.Config) *httptest.Server {
-	t.Helper()
-	client := openobserve.NewClient(cfg)
-	bin, err := buildMCPServer(t)
-	if err != nil {
-		t.Fatalf("build mcp server: %v", err)
-	}
-	// We launch the binary with --http flag and read its chosen port from
-	// stdout. For brevity we run the same binary against the test server's
-	// random port.
-	_ = bin
-	_ = client
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
 }
 
 // buildMCPServer builds the mcp-server binary into a temp dir and

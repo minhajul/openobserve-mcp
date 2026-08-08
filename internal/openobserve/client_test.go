@@ -27,10 +27,10 @@ func newTestClient(t *testing.T, handler http.Handler) (*Client, *httptest.Serve
 }
 
 func TestEscape(t *testing.T) {
-	if got := escape("O'Brien"); got != `O\'Brien` {
+	if got := escape("O'Brien"); got != `O''Brien` {
 		t.Errorf("escape single quote = %q", got)
 	}
-	if got := escape(`a\b`); got != `a\\b` {
+	if got := escape(`a\b`); got != `a\b` {
 		t.Errorf("escape backslash = %q", got)
 	}
 }
@@ -87,7 +87,7 @@ func TestSearchLogsBuildsSQL(t *testing.T) {
 		"level = 'ERROR'",
 		"duration_ms >= 100",
 		"message ILIKE",
-		`O\'Brien`,
+		`O''Brien`,
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("missing %q in SQL: %s", want, sql)

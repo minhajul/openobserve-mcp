@@ -50,7 +50,7 @@ make up                     # starts OpenObserve, waits for /healthz
 make seed                   # loads ~500 logs, 120 metrics, 60 spans
 ```
 
-The seed utility is **deterministic** — re-running it produces the same shape of data so queries are reproducible.
+The seed utility is **deterministic** — re-running it produces the same shape of data so queries are reproducible. Re-running appends; to reset, drop the OpenObserve volume (`make clean` then `make up seed`).
 
 ---
 

@@ -153,10 +153,11 @@ Common aggregations: avg, sum, count, max, min, p95, p99.`),
 
 func (s *Server) getMetricTool() mcp.Tool {
 	return mcp.NewTool("get_metric",
-		mcp.WithDescription(`Get recent samples for a specific metric.
+		mcp.WithDescription(`Get the average value of a metric across a time window.
 
-Use this when the user wants the raw values of a metric across a time
-window (as opposed to an aggregated value).`),
+Returns the mean value of `+"`value`"+` for the named metric (optionally
+filtered by service). Use `+"`query_metrics`"+` for other aggregations
+(sum, p95, p99).`),
 		mcp.WithString("metric",
 			mcp.Description("Metric name."),
 			mcp.Required(),
@@ -453,33 +454,25 @@ func (s *Server) handleGetTrace(ctx context.Context, req mcp.CallToolRequest) (*
 func (s *Server) handleGetServiceErrors(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	since := stringArg(args, "since", "1h")
-	limit := int(floatArg(args, "limit", 20))
 	startT, endT, err := resolveTimeWindow("", "", since)
 	if err != nil {
 		return errorResult(err), nil
 	}
-	// Fetch up to `limit * 10` errors and tally per service. For very
-	// high cardinality this would need SQL aggregation in OpenObserve,
-	// but this matches typical "service errors" use cases.
-	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
+	// Real aggregation: OpenObserve groups by `service` and counts
+	// server-side, so `total` and `sum(by_service)` always agree.
+	resp, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
 		Stream:    "default",
-		Level:     "ERROR",
-		Limit:     limit * 10,
+		GroupBy:   "service",
+		Where:     []string{"level = 'ERROR'"},
 		StartTime: startT,
 		EndTime:   endT,
 	})
 	if err != nil {
 		return errorResult(err), nil
 	}
-	counts := map[string]int{}
-	for _, h := range resp.Hits {
-		if svc, ok := h["service"].(string); ok {
-			counts[svc]++
-		}
-	}
 	return jsonResult(map[string]any{
 		"total_errors": resp.Total,
-		"by_service":   counts,
+		"by_service":   resp.Groups,
 		"window":       map[string]any{"start": startT, "end": endT},
 	})
 }

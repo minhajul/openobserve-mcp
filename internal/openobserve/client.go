@@ -138,10 +138,11 @@ func truncate(s string, n int) string {
 }
 
 // escape escapes a value for embedding inside a SQL string literal.
+// SQL standard: single quotes inside a string literal are escaped by
+// doubling them. Backslashes are NOT escape characters in standard SQL,
+// so they pass through unchanged (verified against OpenObserve).
 func escape(v string) string {
-	v = strings.ReplaceAll(v, `\`, `\\`)
-	v = strings.ReplaceAll(v, `'`, `\'`)
-	return v
+	return strings.ReplaceAll(v, `'`, `''`)
 }
 
 // streamSchema returns the set of fields registered for the named

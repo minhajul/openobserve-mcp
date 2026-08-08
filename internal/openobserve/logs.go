@@ -159,3 +159,99 @@ func (c *Client) IngestLogs(ctx context.Context, stream string, entries []LogEnt
 	)
 	return c.do(ctx, "POST", endpoint, entries, nil)
 }
+
+// AggregateLogsRequest is the input for a SQL aggregation that returns
+// counts grouped by a single column.
+type AggregateLogsRequest struct {
+	Stream    string
+	GroupBy   string   // column to group by (e.g. "service", "status")
+	Where     []string // extra WHERE clauses (joined with AND)
+	StartTime time.Time
+	EndTime   time.Time
+}
+
+// AggregateLogsResponse is the result of a GROUP BY count.
+type AggregateLogsResponse struct {
+	Groups   map[string]int64 `json:"groups"`
+	Total    int64            `json:"total"`
+	QuerySQL string           `json:"query_sql"`
+}
+
+// AggregateLogs runs `SELECT group_col, count(*) FROM stream WHERE ...
+// GROUP BY group_col` and returns the counts. The total matches the sum
+// of the returned group counts because OpenObserve executes the
+// aggregation server-side rather than sampling rows in Go.
+func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*AggregateLogsResponse, error) {
+	if req.Stream == "" {
+		req.Stream = "default"
+	}
+	if req.GroupBy == "" {
+		return nil, fmt.Errorf("AggregateLogs: GroupBy is required")
+	}
+	if req.StartTime.IsZero() {
+		req.StartTime = time.Now().Add(-1 * time.Hour)
+	}
+	if req.EndTime.IsZero() {
+		req.EndTime = time.Now()
+	}
+
+	where := []string{
+		fmt.Sprintf("timestamp >= %d", req.StartTime.UnixMicro()),
+		fmt.Sprintf("timestamp <= %d", req.EndTime.UnixMicro()),
+	}
+	where = append(where, req.Where...)
+	if !strings.Contains(strings.ToLower(strings.Join(where, " ")), "level") {
+		// Caller is responsible for adding level filters; we don't
+		// auto-add them because that would couple this helper to
+		// a particular use case.
+	}
+
+	col := escape(req.GroupBy)
+	sql := fmt.Sprintf(
+		"SELECT %s AS g, count(*) AS c FROM %s WHERE %s GROUP BY %s",
+		col, req.Stream, strings.Join(where, " AND "), col,
+	)
+
+	body := map[string]any{
+		"query": map[string]any{
+			"sql":        sql,
+			"start_time": req.StartTime.UnixMicro(),
+			"end_time":   req.EndTime.UnixMicro(),
+			"from":       0,
+			"size":       1000,
+		},
+	}
+	endpoint := fmt.Sprintf("/api/%s/_search", url.PathEscape(c.cfg.OpenObserveOrg))
+
+	var raw struct {
+		Hits []map[string]any `json:"hits"`
+	}
+	if err := c.do(ctx, "POST", endpoint, body, &raw); err != nil {
+		return nil, err
+	}
+	out := &AggregateLogsResponse{
+		Groups:   make(map[string]int64, len(raw.Hits)),
+		QuerySQL: sql,
+	}
+	for _, h := range raw.Hits {
+		g, _ := h["g"].(string)
+		c, _ := toInt64(h["c"])
+		out.Groups[g] = c
+		out.Total += c
+	}
+	return out, nil
+}
+
+// toInt64 coerces a JSON number (always float64 from encoding/json) to
+// int64. Returns 0 on type mismatch.
+func toInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	}
+	return 0, false
+}
