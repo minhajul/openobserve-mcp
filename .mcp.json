@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "openobserve-mcp": {
+      "command": "/Users/minhajul/Code/personal/openobserve-mcp/bin/mcp-server",
+      "args": [],
+      "env": {
+        "OPENOBSERVE_URL": "http://localhost:5080",
+        "OPENOBSERVE_ORG": "default",
+        "OPENOBSERVE_USERNAME": "root@example.com",
+        "OPENOBSERVE_PASSWORD": "Complexpass#123",
+        "OPENOBSERVE_TIMEOUT": "30s"
+      }
+    }
+  }
+}

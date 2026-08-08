@@ -26,6 +26,7 @@ vendor/
 # Tooling-specific cache directories
 .puku-cli/
 .mcp/
+.mcp.json
 .openobserve/
 
 # Runtime logs
