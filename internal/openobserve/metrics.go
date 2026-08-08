@@ -57,12 +57,8 @@ func (c *Client) QueryMetrics(ctx context.Context, req QueryMetricsRequest) (*Me
 		fn = fmt.Sprintf("%s(value)", fn)
 	}
 
-	groupCols := []string{}
-	for _, g := range req.GroupBy {
-		groupCols = append(groupCols, g)
-	}
-	selectCols := append([]string{}, groupCols...)
-	selectCols = append(selectCols, fmt.Sprintf("%s AS value", fn))
+	groupCols := append([]string(nil), req.GroupBy...)
+	selectCols := append(groupCols, fmt.Sprintf("%s AS value", fn))
 
 	where := []string{
 		fmt.Sprintf("metric_name = '%s'", escape(req.MetricName)),

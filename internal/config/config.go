@@ -19,7 +19,8 @@ type Config struct {
 	OpenObserveTimeout  time.Duration
 
 	// Logging.
-	MCPLogFile string
+	MCPLogFile  string
+	MCPLogLevel string
 }
 
 // Load reads configuration from the process environment and returns a
@@ -33,6 +34,7 @@ func Load() (*Config, error) {
 		OpenObserveUsername: getenv("OPENOBSERVE_USERNAME", "root@example.com"),
 		OpenObservePassword: getenv("OPENOBSERVE_PASSWORD", "Complexpass#123"),
 		MCPLogFile:          os.Getenv("MCP_LOG_FILE"),
+		MCPLogLevel:         getenv("MCP_LOG_LEVEL", "info"),
 	}
 
 	timeoutStr := getenv("OPENOBSERVE_TIMEOUT", "30s")

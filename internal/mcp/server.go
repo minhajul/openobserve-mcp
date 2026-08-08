@@ -8,10 +8,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -76,28 +74,6 @@ func (s *Server) StdioServer() *server.StdioServer {
 func (s *Server) ServeStdio() error {
 	return s.StdioServer().Listen(context.Background(), os.Stdin, os.Stdout)
 }
-
-// ServeHTTP starts an HTTP MCP server. Used by integration tests.
-func (s *Server) ServeHTTP(addr string) (*http.Server, error) {
-	httpServer := server.NewStreamableHTTPServer(
-		s.mcp,
-		server.WithStateLess(true),
-	)
-	hs := &http.Server{
-		Addr:              addr,
-		Handler:           httpServer,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	go func() {
-		if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.logger.Error("mcp http server failed", slog.String("error", err.Error()))
-		}
-	}()
-	return hs, nil
-}
-
-// MCPServer exposes the underlying MCP server (used by integration tests).
-func (s *Server) MCPServer() *server.MCPServer { return s.mcp }
 
 // logToolCall logs structured info about each tool invocation.
 func (s *Server) logToolCall(tool string, start time.Time, err error, extra ...slog.Attr) {

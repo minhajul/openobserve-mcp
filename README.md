@@ -58,6 +58,7 @@ The seed utility is **deterministic** — re-running it produces the same shape 
 | `OPENOBSERVE_PASSWORD` | `Complexpass#123`           | HTTP basic auth password.      |
 | `OPENOBSERVE_TIMEOUT`  | `30s`                       | HTTP request timeout.          |
 | `MCP_LOG_FILE`         | (empty = stderr)            | Optional JSON log file path.   |
+| `MCP_LOG_LEVEL`        | `info`                       | Log level: `info` or `debug`.  |
 
 ---
 

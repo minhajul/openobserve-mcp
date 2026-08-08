@@ -200,11 +200,6 @@ func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*
 		fmt.Sprintf("timestamp <= %d", req.EndTime.UnixMicro()),
 	}
 	where = append(where, req.Where...)
-	if !strings.Contains(strings.ToLower(strings.Join(where, " ")), "level") {
-		// Caller is responsible for adding level filters; we don't
-		// auto-add them because that would couple this helper to
-		// a particular use case.
-	}
 
 	col := escape(req.GroupBy)
 	sql := fmt.Sprintf(
@@ -235,9 +230,9 @@ func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*
 	}
 	for _, h := range raw.Hits {
 		g, _ := h["g"].(string)
-		c, _ := toInt64(h["c"])
-		out.Groups[g] = c
-		out.Total += c
+		count, _ := toInt64(h["c"])
+		out.Groups[g] = count
+		out.Total += count
 	}
 	return out, nil
 }

@@ -29,7 +29,7 @@ func run() error {
 		return err
 	}
 
-	logger := newLogger(cfg.MCPLogFile)
+	logger := newLogger(cfg.MCPLogFile, cfg.MCPLogLevel)
 	logger.Info("starting mcp-server",
 		slog.String("openobserve_url", cfg.OpenObserveURL),
 		slog.String("openobserve_org", cfg.OpenObserveOrg),
@@ -48,9 +48,9 @@ func run() error {
 	return nil
 }
 
-func newLogger(path string) *slog.Logger {
+func newLogger(path, levelName string) *slog.Logger {
 	level := slog.LevelInfo
-	if os.Getenv("MCP_LOG_LEVEL") == "debug" {
+	if levelName == "debug" {
 		level = slog.LevelDebug
 	}
 	if path != "" {

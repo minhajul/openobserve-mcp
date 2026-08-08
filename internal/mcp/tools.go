@@ -26,10 +26,6 @@ func (s *Server) registerTools(srv *server.MCPServer) {
 	srv.AddTool(s.getErrorSummaryTool(), s.handleGetErrorSummary)
 }
 
-// ----------------------------------------------------------------------------
-// Tool schemas
-// ----------------------------------------------------------------------------
-
 func (s *Server) searchLogsTool() mcp.Tool {
 	return mcp.NewTool("search_logs",
 		mcp.WithDescription(`Search application logs in OpenObserve using structured filters.
@@ -270,9 +266,7 @@ Use this when the user wants a high-level error overview.`),
 	)
 }
 
-// ----------------------------------------------------------------------------
 // Tool handlers
-// ----------------------------------------------------------------------------
 
 func (s *Server) handleSearchLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
@@ -508,11 +502,21 @@ func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequ
 		return errorResult(err), nil
 	}
 
-	// Fetch error logs and aggregate per service / status.
-	logs, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
+	// Server-side GROUP BY so total and per-bucket counts match exactly.
+	byService, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
 		Stream:    "default",
-		Level:     "ERROR",
-		Limit:     500,
+		GroupBy:   "service",
+		Where:     []string{"level = 'ERROR'"},
+		StartTime: startT,
+		EndTime:   endT,
+	})
+	if err != nil {
+		return errorResult(err), nil
+	}
+	byStatus, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
+		Stream:    "default",
+		GroupBy:   "status",
+		Where:     []string{"level = 'ERROR'"},
 		StartTime: startT,
 		EndTime:   endT,
 	})
@@ -520,28 +524,15 @@ func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequ
 		return errorResult(err), nil
 	}
 
-	byService := map[string]int{}
-	byStatus := map[string]int{}
-	for _, h := range logs.Hits {
-		if svc, ok := h["service"].(string); ok {
-			byService[svc]++
-		}
-		if st, ok := h["status"].(string); ok {
-			byStatus[st]++
-		}
-	}
-
 	return jsonResult(map[string]any{
-		"total_errors": logs.Total,
-		"by_service":   byService,
-		"by_status":    byStatus,
+		"total_errors": byService.Total,
+		"by_service":   byService.Groups,
+		"by_status":    byStatus.Groups,
 		"window":       map[string]any{"start": startT, "end": endT},
 	})
 }
 
-// ----------------------------------------------------------------------------
 // Helpers
-// ----------------------------------------------------------------------------
 
 func stringArg(args map[string]any, key, def string) string {
 	if v, ok := args[key]; ok {
