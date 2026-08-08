@@ -1,0 +1,40 @@
+# Local environment file (contains real secrets)
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+/bin/
+/bin/**
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go module / build cache
+vendor/
+.venv/
+
+# Test output
+*.test
+*.out
+coverage.txt
+coverage.html
+*.coverprofile
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Tooling-specific cache directories
+.puku-cli/
+.mcp/
+.openobserve/
+
+# Transcripts / logs (kept out of VCS to avoid noisy diffs)
+/tmp/verify-output.txt
+*.log

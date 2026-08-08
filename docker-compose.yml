@@ -1,0 +1,31 @@
+services:
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:latest
+    container_name: openobserve
+    restart: unless-stopped
+    ports:
+      - "5080:5080"   # HTTP API + UI
+    environment:
+      # Data path inside the container.
+      ZO_DATA_DIR: /data
+      # Local single-node mode. Disables heavy clustering features.
+      ZO_NODE_ROLE: all
+      # Allow the default bootstrap user; this only takes effect on a fresh
+      # data volume. Override via .env if you change credentials.
+      ZO_ROOT_USER_EMAIL: ${OPENOBSERVE_USERNAME:-root@example.com}
+      ZO_ROOT_USER_PASSWORD: ${OPENOBSERVE_PASSWORD:-Complexpass#123}
+      # Tuning for local development.
+      ZO_HTTP_PORT: 5080
+      ZO_QUERY_SERVICE_URL: http://localhost:5080
+    volumes:
+      - openobserve-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  openobserve-data:
+    name: openobserve-data
