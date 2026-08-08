@@ -1,21 +1,18 @@
 # OpenObserve MCP
 
-A fully working local observability environment where a natural-language question is answered by an LLM agent that
-selects MCP tools, which call OpenObserve through a clean abstraction layer.
+A working local observability environment where any MCP-compatible client (Claude Desktop, Cursor, Continue, etc.) calls a clean abstraction layer that talks to OpenObserve.
 
 ```mermaid
 flowchart LR
-    User[User] --> Agent[LLM Agent]
-    Agent --> MCP[MCP Server]
-    MCP --> Client[OpenObserve Client]
-    Client --> OO[(OpenObserve)]
+    Client[MCP Client] --> MCP[MCP Server]
+    MCP --> ClientOO[OpenObserve Client]
+    ClientOO --> OO[(OpenObserve)]
     OO --> Logs
     OO --> Metrics
     OO --> Traces
 ```
 
-The LLM never sees OpenObserve URLs, stream names, SQL dialect, authentication, or HTTP details. Those live behind the
-MCP server.
+The client never sees OpenObserve URLs, stream names, SQL dialect, authentication, or HTTP details. Those live behind the MCP server.
 
 ---
 
@@ -24,11 +21,9 @@ MCP server.
 | Component              | Path              | Responsibility                                               |
 |------------------------|-------------------|--------------------------------------------------------------|
 | `mcp-server`           | `cmd/mcp-server`  | Speaks MCP over stdio. Exposes typed observability tools.    |
-| `agent`                | `cmd/agent`       | Connects to the MCP server, picks tools, returns answers.    |
 | `seed`                 | `cmd/seed`        | Loads deterministic sample data via OpenObserve ingestion.   |
 | `internal/openobserve` | client + adapters | The ONLY place OpenObserve URLs, auth, SQL, and HTTP live.   |
 | `internal/mcp`         | tool registration | Tool schemas, parameter validation, structured logging.      |
-| `internal/agent`       | LLM loop          | Anthropic Messages API; tool-use loop; tool-result plumbing. |
 | `internal/config`      | typed config      | Env-var parsing + fail-fast validation.                      |
 
 ---
@@ -37,7 +32,6 @@ MCP server.
 
 - Go **1.22+**
 - Docker with Compose
-- An Anthropic API key (for the agent). Not needed for the MCP server.
 
 ---
 
@@ -64,48 +58,17 @@ The seed utility is **deterministic** — re-running it produces the same shape 
 | `OPENOBSERVE_PASSWORD` | `Complexpass#123`           | HTTP basic auth password.      |
 | `OPENOBSERVE_TIMEOUT`  | `30s`                       | HTTP request timeout.          |
 | `MCP_LOG_FILE`         | (empty = stderr)            | Optional JSON log file path.   |
-| `ANTHROPIC_API_KEY`    | (required for agent)        | API key for the LLM.           |
-| `ANTHROPIC_MODEL`      | `claude-3-5-sonnet-latest`  | Model name.                    |
-| `ANTHROPIC_BASE_URL`   | `https://api.anthropic.com` | Override for proxies.          |
-
-The MCP server only loads `OPENOBSERVE_*`; the LLM agent loads both.
 
 ---
 
-## 5. Running the pieces
-
-### MCP server (stdio)
+## 5. Running the MCP server
 
 ```bash
 make build
 make mcp                       # serves MCP over stdio
 ```
 
-The MCP server is meant to be launched by an MCP client as a subprocess — see the agent.
-
-### LLM agent (interactive)
-
-```bash
-export ANTHROPIC_API_KEY=sk-...
-make agent                     # starts an interactive REPL
-```
-
-### One-shot question
-
-```bash
-make build
-MCP_SERVER_BIN=$(pwd)/bin/mcp-server ANTHROPIC_API_KEY=sk-... \
-    go run ./cmd/agent -q "Which service has the most errors?"
-```
-
-The agent:
-
-1. launches the MCP server as a subprocess
-2. calls `tools/list` to discover capabilities
-3. sends the question + tool schemas to Anthropic
-4. executes any `tool_use` blocks by calling the MCP server
-5. feeds tool results back to the model
-6. prints the model's natural-language answer
+The MCP server is meant to be launched by an MCP client as a subprocess. Configure your client to run `bin/mcp-server` (or `go run ./cmd/mcp-server`) and point it at the OpenObserve instance you started with `make up`.
 
 ---
 
@@ -117,73 +80,36 @@ The agent:
 | `get_recent_logs`    | Most recent logs, optionally filtered.                    |
 | `search_errors`      | Convenience: ERROR-level logs.                            |
 | `query_metrics`      | Aggregation over a metric (`avg`, `p95`, `p99`, …).       |
-| `get_metric`         | Recent samples for a specific metric.                     |
+| `get_metric`         | Average value of a metric across a time window.           |
 | `search_traces`      | Span search by service/operation/status.                  |
 | `get_trace`          | All spans for a given `trace_id`.                         |
 | `get_service_errors` | Error count per service.                                  |
 | `get_slow_requests`  | Requests exceeding a duration threshold.                  |
 | `get_error_summary`  | Total errors + per-service and per-status breakdown.      |
 
-Each tool has a typed JSON schema; the model only sees these names, descriptions, and typed parameters.
+Each tool has a typed JSON schema; the client only sees these names, descriptions, and typed parameters.
 
 ---
 
-## 7. Example end-to-end flows
+## 7. How a tool call flows
 
-The LLM translates a question into a single MCP tool call. Examples:
-
-| Natural-language question                           | MCP tool invoked     |
-|-----------------------------------------------------|----------------------|
-| "Show me the latest errors."                        | `get_recent_logs`    |
-| "How many HTTP 500 errors in the last hour?"        | `search_errors`      |
-| "Slowest requests in the last hour."                | `get_slow_requests`  |
-| "Average `http_request_duration_ms` for `payment`?" | `query_metrics`      |
-| "Find traces related to failed payment requests."   | `search_traces`      |
-| "Show me checkout requests above 2 seconds."        | `search_logs`        |
-| "Which service has the most errors?"                | `get_service_errors` |
-
-The MCP tool:
+To answer a question, the MCP server:
 
 1. validates the parameters,
 2. builds the appropriate OpenObserve SQL inside `internal/openobserve`,
-3. hits the v2 search endpoint via HTTP basic auth,
-4. returns a JSON result that the LLM uses to compose its answer.
+3. hits the `/_search` endpoint via HTTP basic auth,
+4. returns a JSON result that the client uses to compose its answer.
+
+The MCP layer is the only place that knows about OpenObserve.
 
 ---
 
-## 8. Running tests
-
-### Unit tests
-
-```bash
-make test
-```
-
-Covers configuration validation, query construction, parameter validation, response parsing, tool registration, and tool
-invocation against a fake HTTP server.
-
-### Integration tests
-
-These require a real OpenObserve container.
-
-```bash
-make up
-make seed
-make test-integration
-```
-
-Tests live under `tests/integration/` and are gated by the `integration`
-build tag. They exercise the real MCP server as a subprocess and verify end-to-end ingestion + search.
-
----
-
-## 9. Project layout
+## 8. Project layout
 
 ```text
 .
 ├── cmd/
 │   ├── mcp-server/      # MCP server (stdio)
-│   ├── agent/           # LLM agent
 │   └── seed/            # deterministic data loader
 ├── internal/
 │   ├── config/          # typed env-driven config
@@ -192,10 +118,7 @@ build tag. They exercise the real MCP server as a subprocess and verify end-to-e
 │   │   ├── logs.go      # log search + ingest
 │   │   ├── metrics.go   # metric aggregation + ingest
 │   │   └── traces.go    # span search + ingest
-│   ├── mcp/             # MCP server + tool schemas
-│   └── agent/           # LLM tool-use loop
-├── scripts/verify/      # E2E transcript driver (no LLM key needed)
-├── tests/integration/   # build-tagged E2E tests
+│   └── mcp/             # MCP server + tool schemas
 ├── docker-compose.yml
 ├── .env.example
 ├── Makefile
@@ -205,48 +128,39 @@ build tag. They exercise the real MCP server as a subprocess and verify end-to-e
 
 ---
 
-## 10. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom                                                | Cause / fix                                                                     |
 |--------------------------------------------------------|---------------------------------------------------------------------------------|
 | `openobserve not healthy` warning                      | Container still starting. `make up` waits up to ~60s.                           |
 | `missing required configuration: OPENOBSERVE_PASSWORD` | Set the variable in `.env` (or rely on default).                                |
 | `401 unauthorized`                                     | Wrong credentials. The default bootstrap user only exists with a fresh volume.  |
-| `anthropic: 401`                                       | Missing/invalid `ANTHROPIC_API_KEY`.                                            |
-| MCP server hangs                                       | Check that `OPENOBSERVE_URL` is reachable from the agent process.               |
+| MCP server hangs                                       | Check that `OPENOBSERVE_URL` is reachable from the MCP server process.          |
 | Empty query results                                    | Seed data may be outside your window; use `since=24h`.                          |
 | `docker compose up -d` returns EOF                     | Docker daemon not running.                                                      |
 
 ---
 
-## 11. Security considerations
+## 10. Security considerations
 
 - No credentials live in source. `.env.example` documents defaults, and the real `.env` is git-ignored.
 - The MCP server uses HTTP basic auth. In production, replace the default bootstrap user and disable the
   `/api/<org>/<stream>/_json`
   public ingestion (set `ZO_INGEST_ALLOWLIST` etc.).
-- The agent does not log the OpenObserve password or the Anthropic key. Structured logs only carry `tool`,
-  `duration_ms`, and error messages.
-- The LLM never sees raw OpenObserve URLs or SQL.
+- Structured logs only carry `tool`, `duration_ms`, and error messages — no secrets.
+- The MCP client never sees raw OpenObserve URLs or SQL.
 - Set `MCP_LOG_FILE` to a path inside a directory with restricted permissions if you want logs kept off stderr.
 
 ---
 
-## 12. Acceptance verification
+## 11. Acceptance verification
 
 The repository was designed to satisfy every checkbox in section 19 of the project brief. To re-run the full
 verification:
 
 ```bash
 make build
-make test                   # unit tests
 make up                     # OpenObserve + healthcheck
 make seed                   # load sample data
-make test-integration       # exercise real MCP over real OpenObserve
-MCP_SERVER_BIN=$(pwd)/bin/mcp-server \
-  ANTHROPIC_API_KEY=sk-... \
-  bin/agent -q "Which service has the most errors?"
+./bin/mcp-server            # start MCP server, then connect any MCP client
 ```
-
-Run `make verify` to print a sample end-to-end transcript of natural-language queries against the live MCP server (no
-LLM key required).

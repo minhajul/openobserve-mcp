@@ -33,7 +33,7 @@ func main() {
 }
 
 func run(host string) error {
-	cfg, err := config.LoadOpenObserveOnly()
+	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}

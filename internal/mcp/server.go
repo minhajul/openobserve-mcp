@@ -66,8 +66,8 @@ func New(client *openobserve.Client, opts Options) *Server {
 	return s
 }
 
-// StdioServer returns a stdio transport that the agent (or any MCP
-// client) can launch as a subprocess.
+// StdioServer returns a stdio transport that any MCP-compatible client
+// can launch as a subprocess.
 func (s *Server) StdioServer() *server.StdioServer {
 	return server.NewStdioServer(s.mcp)
 }

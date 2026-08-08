@@ -1,7 +1,5 @@
-// Package config loads and validates runtime configuration for both the MCP
-// server and the LLM agent. Configuration is sourced from environment
-// variables (or a .env-style file) so that no credentials ever live in
-// source.
+// Package config loads and validates runtime configuration for the MCP
+// server from environment variables. No credentials ever live in source.
 package config
 
 import (
@@ -22,11 +20,6 @@ type Config struct {
 
 	// Logging.
 	MCPLogFile string
-
-	// LLM provider.
-	AnthropicAPIKey  string
-	AnthropicModel   string
-	AnthropicBaseURL string
 }
 
 // Load reads configuration from the process environment and returns a
@@ -40,9 +33,6 @@ func Load() (*Config, error) {
 		OpenObserveUsername: getenv("OPENOBSERVE_USERNAME", "root@example.com"),
 		OpenObservePassword: getenv("OPENOBSERVE_PASSWORD", "Complexpass#123"),
 		MCPLogFile:          os.Getenv("MCP_LOG_FILE"),
-		AnthropicAPIKey:     os.Getenv("ANTHROPIC_API_KEY"),
-		AnthropicModel:      getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"),
-		AnthropicBaseURL:    getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
 	}
 
 	timeoutStr := getenv("OPENOBSERVE_TIMEOUT", "30s")
@@ -55,20 +45,6 @@ func Load() (*Config, error) {
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
-	return c, nil
-}
-
-// LoadOpenObserveOnly returns a Config restricted to the OpenObserve
-// fields. The MCP server does not need the LLM credentials.
-func LoadOpenObserveOnly() (*Config, error) {
-	c, err := Load()
-	if err != nil {
-		return nil, err
-	}
-	// Strip LLM fields to avoid leaking secrets via debug endpoints.
-	c.AnthropicAPIKey = ""
-	c.AnthropicModel = ""
-	c.AnthropicBaseURL = ""
 	return c, nil
 }
 
