@@ -315,5 +315,3 @@ func generateSpans(seed time.Time, host string) []openobserve.TraceSpan {
 	}
 	return out
 }
-
-// _ = strings.ReplaceAll — referenced to keep import while unused in some builds.

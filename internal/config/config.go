@@ -5,10 +5,8 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -109,19 +107,3 @@ func getenv(key, def string) string {
 	}
 	return def
 }
-
-// MustGetenvInt is unused today but kept for future tuning flags.
-func MustGetenvInt(key string, def int) int {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
-}
-
-// ErrMissingConfig is returned when required configuration is missing.
-var ErrMissingConfig = errors.New("missing required configuration")

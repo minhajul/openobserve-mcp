@@ -31,6 +31,7 @@ type Agent struct {
 	cfg    *config.Config
 	logger *slog.Logger
 	mcpBin string
+	http   *http.Client
 }
 
 // Options configure the Agent.
@@ -44,7 +45,12 @@ func New(cfg *config.Config, opts Options) *Agent {
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	}
-	return &Agent{cfg: cfg, logger: opts.Logger, mcpBin: opts.MCPBin}
+	return &Agent{
+		cfg:    cfg,
+		logger: opts.Logger,
+		mcpBin: opts.MCPBin,
+		http:   &http.Client{Timeout: 60 * time.Second},
+	}
 }
 
 // Run connects to the MCP server, lists tools, asks the model, and
@@ -201,9 +207,9 @@ func resultToText(res *mcp.CallToolResult) string {
 // ----------------------------------------------------------------------------
 
 type providerTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema"`
 }
 
 type providerMessage struct {
@@ -250,20 +256,14 @@ func (r *providerResponse) Text() string {
 func toProviderTools(in []mcp.Tool) []providerTool {
 	out := make([]providerTool, 0, len(in))
 	for _, t := range in {
-		// Marshal ToolInputSchema to JSON and back to a map[string]any so
-		// it has the exact shape the Anthropic API expects.
 		raw, err := json.Marshal(t.InputSchema)
 		if err != nil {
-			continue
-		}
-		var schema map[string]any
-		if err := json.Unmarshal(raw, &schema); err != nil {
 			continue
 		}
 		out = append(out, providerTool{
 			Name:        t.Name,
 			Description: t.Description,
-			InputSchema: schema,
+			InputSchema: raw,
 		})
 	}
 	return out
@@ -282,7 +282,6 @@ func (a *Agent) callModel(ctx context.Context, messages []providerMessage, tools
 		return nil, err
 	}
 
-	client := &http.Client{Timeout: 60 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		a.cfg.AnthropicBaseURL+"/v1/messages", strings.NewReader(string(buf)))
 	if err != nil {
@@ -292,7 +291,7 @@ func (a *Agent) callModel(ctx context.Context, messages []providerMessage, tools
 	req.Header.Set("x-api-key", a.cfg.AnthropicAPIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := client.Do(req)
+	resp, err := a.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: %w", err)
 	}

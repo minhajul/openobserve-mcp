@@ -14,15 +14,30 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/puku/openobserve-mcp/internal/config"
 )
+
+// schemaTTL bounds how long a cached stream schema is considered fresh.
+// Stream schemas change rarely; a generous TTL avoids a per-request
+// round-trip to /api/{org}/streams.
+const schemaTTL = 5 * time.Minute
 
 // Client talks to OpenObserve over HTTP. It is safe for concurrent use.
 type Client struct {
 	cfg     *config.Config
 	http    *http.Client
 	baseURL string
+
+	schemaMu    sync.RWMutex
+	schemaCache map[string]schemaEntry
+}
+
+type schemaEntry struct {
+	fields    map[string]bool
+	expiresAt time.Time
 }
 
 // NewClient creates a Client. The HTTP client uses the configured timeout.
@@ -32,7 +47,8 @@ func NewClient(cfg *config.Config) *Client {
 		http: &http.Client{
 			Timeout: cfg.OpenObserveTimeout,
 		},
-		baseURL: cfg.OpenObserveURL,
+		baseURL:     cfg.OpenObserveURL,
+		schemaCache: make(map[string]schemaEntry),
 	}
 }
 
@@ -128,25 +144,14 @@ func escape(v string) string {
 	return v
 }
 
-// searchURL builds a URL with the v2 search endpoint and the per-tenant
-// prefix.
-func (c *Client) searchURL(stream string) string {
-	v := url.Values{}
-	v.Set("type", "logs")
-	return fmt.Sprintf("%s/api/%s/%s/_search?%s",
-		c.baseURL,
-		url.PathEscape(c.cfg.OpenObserveOrg),
-		url.PathEscape(stream),
-		v.Encode(),
-	)
-}
-
 // streamSchema returns the set of fields registered for the named
 // stream. Used to build queries that SELECT only existing columns.
 //
-// The lookup is best-effort: on error, the caller should fall back to
-// a minimal projection.
+// Results are cached for schemaTTL — stream schemas change rarely.
 func (c *Client) streamSchema(ctx context.Context, stream string) (map[string]bool, error) {
+	if fields, ok := c.cachedSchema(stream); ok {
+		return fields, nil
+	}
 	endpoint := fmt.Sprintf("/api/%s/streams",
 		url.PathEscape(c.cfg.OpenObserveOrg))
 	var resp struct {
@@ -166,8 +171,25 @@ func (c *Client) streamSchema(ctx context.Context, stream string) (map[string]bo
 			for _, f := range s.Schema {
 				out[f.Name] = true
 			}
+			c.storeSchema(stream, out)
 			return out, nil
 		}
 	}
 	return nil, fmt.Errorf("stream %q not found", stream)
+}
+
+func (c *Client) cachedSchema(stream string) (map[string]bool, bool) {
+	c.schemaMu.RLock()
+	defer c.schemaMu.RUnlock()
+	e, ok := c.schemaCache[stream]
+	if !ok || time.Now().After(e.expiresAt) {
+		return nil, false
+	}
+	return e.fields, true
+}
+
+func (c *Client) storeSchema(stream string, fields map[string]bool) {
+	c.schemaMu.Lock()
+	defer c.schemaMu.Unlock()
+	c.schemaCache[stream] = schemaEntry{fields: fields, expiresAt: time.Now().Add(schemaTTL)}
 }

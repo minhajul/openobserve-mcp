@@ -64,7 +64,6 @@ The seed utility is **deterministic** — re-running it produces the same shape 
 | `OPENOBSERVE_PASSWORD` | `Complexpass#123`           | HTTP basic auth password.      |
 | `OPENOBSERVE_TIMEOUT`  | `30s`                       | HTTP request timeout.          |
 | `MCP_LOG_FILE`         | (empty = stderr)            | Optional JSON log file path.   |
-| `MCP_LOG_LEVEL`        | `info`                      | `debug` to see all tool calls. |
 | `ANTHROPIC_API_KEY`    | (required for agent)        | API key for the LLM.           |
 | `ANTHROPIC_MODEL`      | `claude-3-5-sonnet-latest`  | Model name.                    |
 | `ANTHROPIC_BASE_URL`   | `https://api.anthropic.com` | Override for proxies.          |
@@ -193,7 +192,9 @@ build tag. They exercise the real MCP server as a subprocess and verify end-to-e
 │   │   ├── logs.go      # log search + ingest
 │   │   ├── metrics.go   # metric aggregation + ingest
 │   │   └── traces.go    # span search + ingest
-│   └── mcp/             # MCP server + tool schemas
+│   ├── mcp/             # MCP server + tool schemas
+│   └── agent/           # LLM tool-use loop
+├── scripts/verify/      # E2E transcript driver (no LLM key needed)
 ├── tests/integration/   # build-tagged E2E tests
 ├── docker-compose.yml
 ├── .env.example
@@ -212,7 +213,7 @@ build tag. They exercise the real MCP server as a subprocess and verify end-to-e
 | `missing required configuration: OPENOBSERVE_PASSWORD` | Set the variable in `.env` (or rely on default).                                |
 | `401 unauthorized`                                     | Wrong credentials. The default bootstrap user only exists with a fresh volume.  |
 | `anthropic: 401`                                       | Missing/invalid `ANTHROPIC_API_KEY`.                                            |
-| MCP server hangs                                       | The stdio client must launch it via `transport.WithCommandFunc` (already done). |
+| MCP server hangs                                       | Check that `OPENOBSERVE_URL` is reachable from the agent process.               |
 | Empty query results                                    | Seed data may be outside your window; use `since=24h`.                          |
 | `docker compose up -d` returns EOF                     | Docker daemon not running.                                                      |
 

@@ -275,7 +275,8 @@ Use this when the user wants a high-level error overview.`),
 
 func (s *Server) handleSearchLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
-	defer func() { s.logToolCall("search_logs", start, nil) }()
+	var callErr error
+	defer func() { s.logToolCall("search_logs", start, callErr) }()
 
 	args := req.GetArguments()
 	r := openobserve.SearchLogsRequest{
@@ -300,13 +301,14 @@ func (s *Server) handleSearchLogs(ctx context.Context, req mcp.CallToolRequest) 
 		stringArg(args, "since", "1h"),
 	)
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	r.StartTime, r.EndTime = startT, endT
 
 	resp, err := s.client.SearchLogs(ctx, r)
 	if err != nil {
-		s.logToolCall("search_logs", start, err)
+		callErr = err
 		return errorResult(err), nil
 	}
 	return jsonResult(resp)
@@ -382,7 +384,6 @@ func (s *Server) handleQueryMetrics(ctx context.Context, req mcp.CallToolRequest
 }
 
 func (s *Server) handleGetMetric(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// For a single metric, return count samples as a stand-in.
 	args := req.GetArguments()
 	metric := stringArg(args, "metric", "")
 	if metric == "" {
