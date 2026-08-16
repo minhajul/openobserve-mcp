@@ -176,3 +176,7 @@ make up                     # OpenObserve + healthcheck
 make seed                   # load sample data
 ./bin/mcp-server            # start MCP server, then connect any MCP client
 ```
+
+## Author
+
+Made with ❤️ by [Minhajul](https://github.com/minhajul)
