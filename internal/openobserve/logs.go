@@ -2,25 +2,17 @@ package openobserve
 
 import (
 	"context"
-	"fmt"
-	"net/url"
-	"strings"
+
+	"github.com/puku/openobserve-mcp/internal/sqlbuilder"
 )
 
 type LogEntry map[string]any
 
-type SearchLogsRequest struct {
-	Stream          string
-	Service         string
-	Level           string
-	Status          string
-	TraceID         string
-	MessageContains string
-	MinDurationMS   int
-	Range           TimeRange
-	Limit           int
-	Direction       string
-}
+type SearchLogsRequest = sqlbuilder.SearchLogsRequest
+type AggregateLogsRequest = sqlbuilder.AggregateLogsRequest
+type TimeRange = sqlbuilder.TimeRange
+
+var NowRange = sqlbuilder.NowRange
 
 type SearchLogsResponse struct {
 	Hits     []LogEntry `json:"hits"`
@@ -31,59 +23,10 @@ type SearchLogsResponse struct {
 
 func (c *Client) SearchLogs(ctx context.Context, req SearchLogsRequest) (*SearchLogsResponse, error) {
 	req.Stream = c.resolveStream(KindLog, req.Stream)
-	if req.Limit <= 0 {
-		req.Limit = 100
+	sql, _, err := sqlbuilder.LogsBuild(ctx, req, c)
+	if err != nil {
+		return nil, err
 	}
-	if req.Limit > 1000 {
-		req.Limit = 1000
-	}
-	if req.Direction == "" {
-		req.Direction = "desc"
-	}
-	if req.Range.Start.IsZero() || req.Range.End.IsZero() {
-		req.Range = NowRange(0)
-	}
-
-	where := req.Range.Where()
-	if req.Service != "" {
-		where = append(where, fmt.Sprintf("service = '%s'", escape(req.Service)))
-	}
-	if req.Level != "" {
-		where = append(where, fmt.Sprintf("level = '%s'", escape(strings.ToUpper(req.Level))))
-	}
-	if req.Status != "" {
-		where = append(where, fmt.Sprintf("status = '%s'", escape(req.Status)))
-	}
-	if req.TraceID != "" {
-		where = append(where, fmt.Sprintf("trace_id = '%s'", escape(req.TraceID)))
-	}
-	if req.MessageContains != "" {
-		where = append(where, fmt.Sprintf("message ILIKE '%%%s%%'", escape(req.MessageContains)))
-	}
-	if req.MinDurationMS > 0 {
-		where = append(where, fmt.Sprintf("duration_ms >= %d", req.MinDurationMS))
-	}
-
-	selectCols := []string{"timestamp", "level", "service", "message"}
-	if schema, err := c.streamSchema(ctx, req.Stream); err == nil {
-		for _, col := range []string{"host", "method", "path", "status", "duration_ms", "trace_id", "error", "environment"} {
-			if schema[col] {
-				selectCols = append(selectCols, col)
-			}
-		}
-	} else {
-		selectCols = []string{"timestamp"}
-	}
-
-	sql := fmt.Sprintf(
-		"SELECT %s FROM %s WHERE %s ORDER BY timestamp %s LIMIT %d",
-		strings.Join(selectCols, ", "),
-		req.Stream,
-		strings.Join(where, " AND "),
-		strings.ToLower(req.Direction),
-		req.Limit,
-	)
-
 	body := searchBody(sql, req.Range, 0, req.Limit)
 	resp := &SearchLogsResponse{QuerySQL: sql}
 	if err := c.do(ctx, "POST", searchEndpoint(c.cfg.OpenObserveOrg), body, resp); err != nil {
@@ -97,18 +40,8 @@ func (c *Client) IngestLogs(ctx context.Context, stream string, entries []LogEnt
 	if len(entries) == 0 {
 		return nil
 	}
-	endpoint := fmt.Sprintf("/api/%s/%s/_json",
-		url.PathEscape(c.cfg.OpenObserveOrg),
-		url.PathEscape(stream),
-	)
+	endpoint := ingestEndpoint(c.cfg.OpenObserveOrg, stream)
 	return c.do(ctx, "POST", endpoint, entries, nil)
-}
-
-type AggregateLogsRequest struct {
-	Stream  string
-	GroupBy string
-	Where   []string
-	Range   TimeRange
 }
 
 type AggregateLogsResponse struct {
@@ -119,21 +52,10 @@ type AggregateLogsResponse struct {
 
 func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*AggregateLogsResponse, error) {
 	req.Stream = c.resolveStream(KindLog, req.Stream)
-	if req.GroupBy == "" {
-		return nil, fmt.Errorf("AggregateLogs: GroupBy is required")
+	sql, _, err := sqlbuilder.AggregateLogsBuild(req)
+	if err != nil {
+		return nil, err
 	}
-	if req.Range.Start.IsZero() || req.Range.End.IsZero() {
-		req.Range = NowRange(0)
-	}
-
-	where := append(req.Range.Where(), req.Where...)
-
-	col := escape(req.GroupBy)
-	sql := fmt.Sprintf(
-		"SELECT %s AS g, count(*) AS c FROM %s WHERE %s GROUP BY %s",
-		col, req.Stream, strings.Join(where, " AND "), col,
-	)
-
 	body := searchBody(sql, req.Range, 0, 1000)
 	var raw struct {
 		Hits []map[string]any `json:"hits"`

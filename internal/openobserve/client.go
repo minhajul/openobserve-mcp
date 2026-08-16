@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,26 +17,6 @@ import (
 const schemaTTL = 5 * time.Minute
 
 const defaultQueryWindow = 1 * time.Hour
-
-type TimeRange struct {
-	Start time.Time
-	End   time.Time
-}
-
-func NowRange(d time.Duration) TimeRange {
-	now := time.Now()
-	if d <= 0 {
-		d = defaultQueryWindow
-	}
-	return TimeRange{Start: now.Add(-d), End: now}
-}
-
-func (r TimeRange) Where() []string {
-	return []string{
-		fmt.Sprintf("timestamp >= %d", r.Start.UnixMicro()),
-		fmt.Sprintf("timestamp <= %d", r.End.UnixMicro()),
-	}
-}
 
 type Transport interface {
 	Do(*http.Request) (*http.Response, error)
@@ -152,10 +131,6 @@ func truncate(s string, n int) string {
 	return s[:n] + "...(truncated)"
 }
 
-func escape(v string) string {
-	return strings.ReplaceAll(v, `'`, `''`)
-}
-
 type StreamKind int
 
 const (
@@ -181,6 +156,13 @@ func (c *Client) resolveStream(kind StreamKind, given string) string {
 
 func searchEndpoint(org string) string {
 	return fmt.Sprintf("/api/%s/_search", url.PathEscape(org))
+}
+
+func ingestEndpoint(org, stream string) string {
+	return fmt.Sprintf("/api/%s/%s/_json",
+		url.PathEscape(org),
+		url.PathEscape(stream),
+	)
 }
 
 type searchQuery struct {
@@ -247,4 +229,16 @@ func (c *Client) storeSchema(stream string, fields map[string]bool) {
 	c.schemaMu.Lock()
 	defer c.schemaMu.Unlock()
 	c.schemaCache[stream] = schemaEntry{fields: fields, expiresAt: time.Now().Add(schemaTTL)}
+}
+
+func (c *Client) ResolveColumns(ctx context.Context, stream string) ([]string, error) {
+	fields, err := c.streamSchema(ctx, stream)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(fields))
+	for name := range fields {
+		out = append(out, name)
+	}
+	return out, nil
 }
