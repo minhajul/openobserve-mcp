@@ -148,6 +148,98 @@ func TestMetricsBuildDefaultsAndPercentile(t *testing.T) {
 	}
 }
 
+func TestMetricsBuildAllAggregations(t *testing.T) {
+	cases := []struct {
+		agg   string
+		match string
+	}{
+		{"avg", "AVG(value) AS value"},
+		{"sum", "SUM(value) AS value"},
+		{"count", "COUNT(value) AS value"},
+		{"max", "MAX(value) AS value"},
+		{"min", "MIN(value) AS value"},
+		{"p95", "approx_percentile(value, 95) AS value"},
+		{"p99", "approx_percentile(value, 99) AS value"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.agg, func(t *testing.T) {
+			sql, _, err := MetricsBuild(context.Background(), QueryMetricsRequest{
+				Stream:      "metrics",
+				MetricName:  "m",
+				Aggregation: tc.agg,
+				Range:       TimeRange{Start: time.UnixMicro(1), End: time.UnixMicro(2)},
+			})
+			if err != nil {
+				t.Fatalf("MetricsBuild(%s): %v", tc.agg, err)
+			}
+			if !strings.Contains(sql, tc.match) {
+				t.Errorf("agg=%s SQL=%q missing %q", tc.agg, sql, tc.match)
+			}
+		})
+	}
+}
+
+func TestLogsBuildOmitsOptionalColumnNotInSchema(t *testing.T) {
+	sql, _, err := LogsBuild(context.Background(), SearchLogsRequest{
+		Stream: "default",
+		Limit:  1,
+		Range:  TimeRange{Start: time.UnixMicro(1), End: time.UnixMicro(2)},
+	}, FixedColumns("timestamp", "level", "service", "message"))
+	if err != nil {
+		t.Fatalf("LogsBuild: %v", err)
+	}
+	for _, banned := range []string{"status", "duration_ms", "host"} {
+		if strings.Contains(sql, banned) {
+			t.Errorf("optional column %q leaked into SQL: %q", banned, sql)
+		}
+	}
+}
+
+func TestEscape(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain", "plain"},
+		{"o'reilly", "o''reilly"},
+		{"a'b'c", "a''b''c"},
+		{"back\\slash", "back\\slash"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := escape(tc.in); got != tc.want {
+			t.Errorf("escape(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestTracesBuildStatusCasing(t *testing.T) {
+	sql, _, err := TracesBuild(context.Background(), SearchTracesRequest{
+		Stream: "traces",
+		Status: "ERROR",
+		Limit:  1,
+		Range:  TimeRange{Start: time.UnixMicro(1), End: time.UnixMicro(2)},
+	})
+	if err != nil {
+		t.Fatalf("TracesBuild: %v", err)
+	}
+	if !strings.Contains(sql, "status = 'error'") {
+		t.Errorf("status casing wrong: %q", sql)
+	}
+}
+
+func TestTracesBuildMinDuration(t *testing.T) {
+	sql, _, err := TracesBuild(context.Background(), SearchTracesRequest{
+		Stream:     "traces",
+		MinSpanDur: 5000,
+		Limit:      1,
+		Range:      TimeRange{Start: time.UnixMicro(1), End: time.UnixMicro(2)},
+	})
+	if err != nil {
+		t.Fatalf("TracesBuild: %v", err)
+	}
+	if !strings.Contains(sql, "duration >= 5000") {
+		t.Errorf("min duration filter missing: %q", sql)
+	}
+}
+
 type failingResolver struct{}
 
 func (failingResolver) ResolveColumns(_ context.Context, _ string) ([]string, error) {

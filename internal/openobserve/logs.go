@@ -58,7 +58,10 @@ func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*
 	}
 	body := searchBody(sql, req.Range, 0, 1000)
 	var raw struct {
-		Hits []map[string]any `json:"hits"`
+		Hits []struct {
+			G string `json:"g"`
+			C int64  `json:"c"`
+		} `json:"hits"`
 	}
 	if err := c.do(ctx, "POST", c.searchEndpoint(), body, &raw); err != nil {
 		return nil, err
@@ -68,15 +71,8 @@ func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*
 		QuerySQL: sql,
 	}
 	for _, h := range raw.Hits {
-		g, _ := h["g"].(string)
-		count, _ := toInt64(h["c"])
-		out.Groups[g] = count
-		out.Total += count
+		out.Groups[h.G] = h.C
+		out.Total += h.C
 	}
 	return out, nil
-}
-
-func toInt64(v any) (int64, bool) {
-	n, ok := v.(float64)
-	return int64(n), ok
 }

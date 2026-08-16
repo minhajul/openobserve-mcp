@@ -303,6 +303,10 @@ func (s *Server) handleSearchLogs(ctx context.Context, req mcp.CallToolRequest) 
 }
 
 func (s *Server) handleGetRecentLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	var callErr error
+	defer func() { s.logToolCall("get_recent_logs", start, callErr) }()
+
 	args := req.GetArguments()
 	limit := int(floatArg(args, "limit", 20))
 	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
@@ -313,6 +317,7 @@ func (s *Server) handleGetRecentLogs(ctx context.Context, req mcp.CallToolReques
 		Range:   openobserve.NowRange(time.Hour),
 	})
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	return jsonResult(resp)
@@ -443,22 +448,33 @@ func (s *Server) handleSearchTraces(ctx context.Context, req mcp.CallToolRequest
 }
 
 func (s *Server) handleGetTrace(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	var callErr error
+	defer func() { s.logToolCall("get_trace", start, callErr) }()
+
 	args := req.GetArguments()
 	traceID := stringArg(args, "trace_id", "")
 	if traceID == "" {
-		return errorResult(fmt.Errorf("trace_id is required")), nil
+		callErr = fmt.Errorf("trace_id is required")
+		return errorResult(callErr), nil
 	}
 	resp, err := s.client.GetTrace(ctx, "traces", traceID)
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	return jsonResult(resp)
 }
 
 func (s *Server) handleGetServiceErrors(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	var callErr error
+	defer func() { s.logToolCall("get_service_errors", start, callErr) }()
+
 	args := req.GetArguments()
 	rng, err := windowFromArgs(args)
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	resp, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
@@ -468,6 +484,7 @@ func (s *Server) handleGetServiceErrors(ctx context.Context, req mcp.CallToolReq
 		Range:   rng,
 	})
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	return jsonResult(map[string]any{
@@ -478,11 +495,16 @@ func (s *Server) handleGetServiceErrors(ctx context.Context, req mcp.CallToolReq
 }
 
 func (s *Server) handleGetSlowRequests(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	var callErr error
+	defer func() { s.logToolCall("get_slow_requests", start, callErr) }()
+
 	args := req.GetArguments()
 	minDuration := int(floatArg(args, "min_duration_ms", 1000))
 	limit := int(floatArg(args, "limit", 20))
 	rng, err := windowFromArgs(args)
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
@@ -493,15 +515,21 @@ func (s *Server) handleGetSlowRequests(ctx context.Context, req mcp.CallToolRequ
 		Range:         rng,
 	})
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	return jsonResult(resp)
 }
 
 func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	var callErr error
+	defer func() { s.logToolCall("get_error_summary", start, callErr) }()
+
 	args := req.GetArguments()
 	rng, err := windowFromArgs(args)
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 
@@ -512,6 +540,7 @@ func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequ
 		Range:   rng,
 	})
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	byStatus, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
@@ -521,6 +550,7 @@ func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequ
 		Range:   rng,
 	})
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 

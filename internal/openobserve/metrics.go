@@ -7,9 +7,10 @@ import (
 )
 
 type MetricsResponse struct {
-	Hits   []map[string]any `json:"hits"`
-	TookMs int              `json:"took_ms"`
-	SQL    string           `json:"query_sql"`
+	Hits     []map[string]any `json:"hits"`
+	Total    int64            `json:"total"`
+	TookMs   int              `json:"took_ms"`
+	QuerySQL string           `json:"query_sql"`
 }
 
 type QueryMetricsRequest = sqlbuilder.QueryMetricsRequest
@@ -21,7 +22,7 @@ func (c *Client) QueryMetrics(ctx context.Context, req QueryMetricsRequest) (*Me
 		return nil, err
 	}
 	body := searchBody(sql, req.Range, 0, req.Limit)
-	resp := &MetricsResponse{SQL: sql}
+	resp := &MetricsResponse{QuerySQL: sql}
 	if err := c.do(ctx, "POST", c.searchEndpoint(), body, resp); err != nil {
 		return nil, err
 	}

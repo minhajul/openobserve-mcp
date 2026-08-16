@@ -121,7 +121,21 @@ func resolveTimeWindow(start, end, since string) (time.Time, time.Time, error) {
 		if err != nil {
 			return time.Time{}, time.Time{}, fmt.Errorf("invalid end_time: %w", err)
 		}
-		return t.Add(-time.Hour), t, nil // if start omitted, default to 1h before end
+		if start != "" {
+			s, err := time.Parse(time.RFC3339, start)
+			if err != nil {
+				return time.Time{}, time.Time{}, fmt.Errorf("invalid start_time: %w", err)
+			}
+			return s, t, nil
+		}
+		return t.Add(-time.Hour), t, nil
+	}
+	if start != "" {
+		s, err := time.Parse(time.RFC3339, start)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid start_time: %w", err)
+		}
+		return s, now, nil
 	}
 	if since != "" {
 		d, err := parseDuration(since)

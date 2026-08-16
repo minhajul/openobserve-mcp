@@ -12,10 +12,10 @@ type TraceSpan map[string]any
 type SearchTracesRequest = sqlbuilder.SearchTracesRequest
 
 type SearchTracesResponse struct {
-	Hits   []TraceSpan `json:"hits"`
-	Total  int64       `json:"total"`
-	TookMs int         `json:"took_ms"`
-	SQL    string      `json:"query_sql"`
+	Hits     []TraceSpan `json:"hits"`
+	Total    int64       `json:"total"`
+	TookMs   int         `json:"took_ms"`
+	QuerySQL string      `json:"query_sql"`
 }
 
 func (c *Client) SearchTraces(ctx context.Context, req SearchTracesRequest) (*SearchTracesResponse, error) {
@@ -25,7 +25,7 @@ func (c *Client) SearchTraces(ctx context.Context, req SearchTracesRequest) (*Se
 		return nil, err
 	}
 	body := searchBody(sql, req.Range, 0, req.Limit)
-	resp := &SearchTracesResponse{SQL: sql}
+	resp := &SearchTracesResponse{QuerySQL: sql}
 	if err := c.do(ctx, "POST", c.searchEndpoint(), body, resp); err != nil {
 		return nil, err
 	}
