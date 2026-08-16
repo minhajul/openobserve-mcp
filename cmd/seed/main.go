@@ -62,7 +62,6 @@ func run(host string) error {
 	}
 	logger.Info("spans ingested", slog.Int("count", len(spans)))
 
-	// Dump a small JSON manifest so other tools know the seeded window.
 	manifest := map[string]any{
 		"seed_window_start": seed.Add(-1 * time.Hour).Format(time.RFC3339),
 		"seed_window_end":   seed.Add(1 * time.Hour).Format(time.RFC3339),
@@ -76,7 +75,6 @@ func run(host string) error {
 	return nil
 }
 
-// services used by the seed.
 var services = []string{"api", "checkout", "payment", "auth", "inventory"}
 var environments = []string{"prod", "staging"}
 var users = []string{"u_1029", "u_2031", "u_3492", "u_4471", "u_5503"}
@@ -106,8 +104,6 @@ var messages = map[string][]string{
 	},
 }
 
-// generateLogs creates ~500 deterministic logs across the configured
-// services, levels, and statuses.
 func generateLogs(seed time.Time, host string) []openobserve.LogEntry {
 	r := rand.New(rand.NewSource(42))
 	out := make([]openobserve.LogEntry, 0, 500)
@@ -221,7 +217,6 @@ func pickError(r *rand.Rand) string {
 	return errs[r.Intn(len(errs))]
 }
 
-// generateMetrics creates ~120 metric samples.
 func generateMetrics(seed time.Time, host string) []map[string]any {
 	r := rand.New(rand.NewSource(99))
 	out := make([]map[string]any, 0, 120)
@@ -261,14 +256,11 @@ func generateMetrics(seed time.Time, host string) []map[string]any {
 	return out
 }
 
-// generateSpans creates ~30 traces, each with a parent + child span.
 func generateSpans(seed time.Time, host string) []openobserve.TraceSpan {
 	r := rand.New(rand.NewSource(7))
 	out := make([]openobserve.TraceSpan, 0, 60)
 	for i := 0; i < 30; i++ {
 		traceID := fmt.Sprintf("trace_%08x", i+1)
-		// The parent span is from the "api" service; the child is from a
-		// randomly chosen downstream service.
 		parentSvc := "api"
 		childSvc := services[r.Intn(len(services))]
 		if childSvc == "api" {

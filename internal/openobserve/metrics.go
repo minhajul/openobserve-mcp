@@ -8,18 +8,12 @@ import (
 	"time"
 )
 
-// MetricsResponse is the result of a metrics query.
 type MetricsResponse struct {
 	Hits   []map[string]any `json:"hits"`
 	TookMs int              `json:"took_ms"`
 	SQL    string           `json:"query_sql"`
 }
 
-// QueryMetricsRequest queries a metric using SQL aggregation.
-//
-// MetricName is the metric field (e.g. "http_requests_total").
-// Aggregation supports: avg, sum, count, max, min, p95, p99.
-// GroupBy is an optional list of fields (e.g. "service", "status").
 type QueryMetricsRequest struct {
 	Stream      string
 	MetricName  string
@@ -31,7 +25,6 @@ type QueryMetricsRequest struct {
 	Limit       int
 }
 
-// QueryMetrics executes the metric aggregation against the metrics stream.
 func (c *Client) QueryMetrics(ctx context.Context, req QueryMetricsRequest) (*MetricsResponse, error) {
 	if req.Stream == "" {
 		req.Stream = "metrics"
@@ -102,7 +95,6 @@ func (c *Client) QueryMetrics(ctx context.Context, req QueryMetricsRequest) (*Me
 	return resp, nil
 }
 
-// IngestMetrics sends a batch of metric samples.
 func (c *Client) IngestMetrics(ctx context.Context, stream string, entries []map[string]any) error {
 	if stream == "" {
 		stream = "metrics"

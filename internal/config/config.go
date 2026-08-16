@@ -1,5 +1,3 @@
-// Package config loads and validates runtime configuration for the MCP
-// server from environment variables. No credentials ever live in source.
 package config
 
 import (
@@ -9,24 +7,17 @@ import (
 	"time"
 )
 
-// Config holds validated runtime configuration.
 type Config struct {
-	// OpenObserve connection details.
 	OpenObserveURL      string
 	OpenObserveOrg      string
 	OpenObserveUsername string
 	OpenObservePassword string
 	OpenObserveTimeout  time.Duration
 
-	// Logging.
 	MCPLogFile  string
 	MCPLogLevel string
 }
 
-// Load reads configuration from the process environment and returns a
-// fully-validated Config. It does NOT load .env files itself — callers
-// should do that (e.g. via the godotenv-style "OPENOBSERVE_*" variables
-// exported by docker compose).
 func Load() (*Config, error) {
 	c := &Config{
 		OpenObserveURL:      getenv("OPENOBSERVE_URL", "http://localhost:5080"),

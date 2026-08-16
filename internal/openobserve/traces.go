@@ -8,23 +8,20 @@ import (
 	"time"
 )
 
-// TraceSpan represents one span in a trace.
 type TraceSpan map[string]any
 
-// SearchTracesRequest searches for spans matching the filters.
 type SearchTracesRequest struct {
 	Stream     string
 	Service    string
 	Operation  string
-	Status     string // "ok" / "error"
+	Status     string
 	TraceID    string
-	MinSpanDur int // microseconds
+	MinSpanDur int
 	StartTime  time.Time
 	EndTime    time.Time
 	Limit      int
 }
 
-// SearchTracesResponse is the result.
 type SearchTracesResponse struct {
 	Hits   []TraceSpan `json:"hits"`
 	Total  int64       `json:"total"`
@@ -32,7 +29,6 @@ type SearchTracesResponse struct {
 	SQL    string      `json:"query_sql"`
 }
 
-// SearchTraces returns spans matching the request.
 func (c *Client) SearchTraces(ctx context.Context, req SearchTracesRequest) (*SearchTracesResponse, error) {
 	if req.Stream == "" {
 		req.Stream = "traces"
@@ -95,7 +91,6 @@ func (c *Client) SearchTraces(ctx context.Context, req SearchTracesRequest) (*Se
 	return resp, nil
 }
 
-// GetTrace returns all spans for a given trace_id.
 func (c *Client) GetTrace(ctx context.Context, stream, traceID string) (*SearchTracesResponse, error) {
 	if stream == "" {
 		stream = "traces"
@@ -110,7 +105,6 @@ func (c *Client) GetTrace(ctx context.Context, stream, traceID string) (*SearchT
 	})
 }
 
-// IngestSpans sends spans to the traces stream.
 func (c *Client) IngestSpans(ctx context.Context, stream string, spans []TraceSpan) error {
 	if stream == "" {
 		stream = "traces"

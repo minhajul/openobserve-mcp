@@ -12,7 +12,6 @@ import (
 	"github.com/puku/openobserve-mcp/internal/openobserve"
 )
 
-// registerTools wires all observability tools into the MCP server.
 func (s *Server) registerTools(srv *server.MCPServer) {
 	srv.AddTool(s.searchLogsTool(), s.handleSearchLogs)
 	srv.AddTool(s.getRecentLogsTool(), s.handleGetRecentLogs)
@@ -266,8 +265,6 @@ Use this when the user wants a high-level error overview.`),
 	)
 }
 
-// Tool handlers
-
 func (s *Server) handleSearchLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 	var callErr error
@@ -452,8 +449,6 @@ func (s *Server) handleGetServiceErrors(ctx context.Context, req mcp.CallToolReq
 	if err != nil {
 		return errorResult(err), nil
 	}
-	// Real aggregation: OpenObserve groups by `service` and counts
-	// server-side, so `total` and `sum(by_service)` always agree.
 	resp, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
 		Stream:    "default",
 		GroupBy:   "service",
@@ -502,7 +497,6 @@ func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequ
 		return errorResult(err), nil
 	}
 
-	// Server-side GROUP BY so total and per-bucket counts match exactly.
 	byService, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
 		Stream:    "default",
 		GroupBy:   "service",
@@ -531,8 +525,6 @@ func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequ
 		"window":       map[string]any{"start": startT, "end": endT},
 	})
 }
-
-// Helpers
 
 func stringArg(args map[string]any, key, def string) string {
 	if v, ok := args[key]; ok {

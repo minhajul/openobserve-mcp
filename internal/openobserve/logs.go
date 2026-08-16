@@ -8,36 +8,22 @@ import (
 	"time"
 )
 
-// LogEntry is a single log record. OpenObserve uses a JSON map internally,
-// but the MCP layer benefits from typed fields.
 type LogEntry map[string]any
 
-// SearchLogsRequest is the typed input the MCP layer hands to the client.
 type SearchLogsRequest struct {
-	// Stream is the OpenObserve stream name (e.g. "default").
-	Stream string
-	// Service is the value of the `service` field, if any.
-	Service string
-	// Level is the value of the `level` field, e.g. "ERROR", "INFO".
-	Level string
-	// Status filters by the `status` field (e.g. "500").
-	Status string
-	// TraceID filters by `trace_id`.
-	TraceID string
-	// MessageContains performs a LIKE match on `message`.
+	Stream          string
+	Service         string
+	Level           string
+	Status          string
+	TraceID         string
 	MessageContains string
-	// MinDurationMS filters to entries with `duration_ms >= MinDurationMS`.
-	MinDurationMS int
-	// StartTime / EndTime bound the search window.
-	StartTime time.Time
-	EndTime   time.Time
-	// Limit caps the number of returned rows (default 100, max 1000).
-	Limit int
-	// Direction is "asc" or "desc" (default "desc").
-	Direction string
+	MinDurationMS   int
+	StartTime       time.Time
+	EndTime         time.Time
+	Limit           int
+	Direction       string
 }
 
-// SearchLogsResponse is the result of a search.
 type SearchLogsResponse struct {
 	Hits     []LogEntry `json:"hits"`
 	Total    int64      `json:"total"`
@@ -45,7 +31,6 @@ type SearchLogsResponse struct {
 	QuerySQL string     `json:"query_sql"`
 }
 
-// SearchLogs executes a structured log search against OpenObserve.
 func (c *Client) SearchLogs(ctx context.Context, req SearchLogsRequest) (*SearchLogsResponse, error) {
 	if req.Stream == "" {
 		req.Stream = "default"
@@ -89,10 +74,6 @@ func (c *Client) SearchLogs(ctx context.Context, req SearchLogsRequest) (*Search
 		where = append(where, fmt.Sprintf("duration_ms >= %d", req.MinDurationMS))
 	}
 
-	// Discover the columns present in the stream's schema. We must avoid
-	// SELECT-ing a field that does not exist (OpenObserve errors out).
-	// We probe by hitting the streams endpoint and filtering to fields
-	// the stream has registered.
 	selectCols := []string{"timestamp", "level", "service", "message"}
 	if schema, err := c.streamSchema(ctx, req.Stream); err == nil {
 		for _, col := range []string{"host", "method", "path", "status", "duration_ms", "trace_id", "error", "environment"} {
@@ -101,7 +82,6 @@ func (c *Client) SearchLogs(ctx context.Context, req SearchLogsRequest) (*Search
 			}
 		}
 	} else {
-		// Fallback to a minimal projection when the schema lookup fails.
 		selectCols = []string{"timestamp"}
 	}
 
@@ -124,8 +104,6 @@ func (c *Client) SearchLogs(ctx context.Context, req SearchLogsRequest) (*Search
 		},
 	}
 
-	// OpenObserve's search endpoint lives at /api/{org}/_search (no
-	// stream in path); the stream is referenced inside the SQL.
 	endpoint := fmt.Sprintf("/api/%s/_search",
 		url.PathEscape(c.cfg.OpenObserveOrg),
 	)
@@ -137,15 +115,6 @@ func (c *Client) SearchLogs(ctx context.Context, req SearchLogsRequest) (*Search
 	return resp, nil
 }
 
-// IngestLogs sends a batch of log records to OpenObserve using the
-// multi-stream JSON ingestion endpoint.
-//
-// OpenObserve's ingestion endpoint expects a top-level JSON array, e.g.:
-//
-//	POST /api/{org}/{stream}/_json
-//	[{"timestamp":...}, {"timestamp":...}]
-//
-// See: https://openobserve.ai/docs/api/ingestion/
 func (c *Client) IngestLogs(ctx context.Context, stream string, entries []LogEntry) error {
 	if stream == "" {
 		stream = "default"
@@ -160,27 +129,20 @@ func (c *Client) IngestLogs(ctx context.Context, stream string, entries []LogEnt
 	return c.do(ctx, "POST", endpoint, entries, nil)
 }
 
-// AggregateLogsRequest is the input for a SQL aggregation that returns
-// counts grouped by a single column.
 type AggregateLogsRequest struct {
 	Stream    string
-	GroupBy   string   // column to group by (e.g. "service", "status")
-	Where     []string // extra WHERE clauses (joined with AND)
+	GroupBy   string
+	Where     []string
 	StartTime time.Time
 	EndTime   time.Time
 }
 
-// AggregateLogsResponse is the result of a GROUP BY count.
 type AggregateLogsResponse struct {
 	Groups   map[string]int64 `json:"groups"`
 	Total    int64            `json:"total"`
 	QuerySQL string           `json:"query_sql"`
 }
 
-// AggregateLogs runs `SELECT group_col, count(*) FROM stream WHERE ...
-// GROUP BY group_col` and returns the counts. The total matches the sum
-// of the returned group counts because OpenObserve executes the
-// aggregation server-side rather than sampling rows in Go.
 func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*AggregateLogsResponse, error) {
 	if req.Stream == "" {
 		req.Stream = "default"
@@ -237,8 +199,6 @@ func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*
 	return out, nil
 }
 
-// toInt64 coerces a JSON number (always float64 from encoding/json) to
-// int64. Returns 0 on type mismatch.
 func toInt64(v any) (int64, bool) {
 	switch n := v.(type) {
 	case float64:
