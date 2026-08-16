@@ -287,16 +287,12 @@ func (s *Server) handleSearchLogs(ctx context.Context, req mcp.CallToolRequest) 
 		r.Limit = int(v)
 	}
 
-	startT, endT, err := resolveTimeWindow(
-		stringArg(args, "start_time", ""),
-		stringArg(args, "end_time", ""),
-		stringArg(args, "since", "1h"),
-	)
+	rng, err := windowFromArgs(args)
 	if err != nil {
 		callErr = err
 		return errorResult(err), nil
 	}
-	r.Range = openobserve.TimeRange{Start: startT, End: endT}
+	r.Range = rng
 
 	resp, err := s.client.SearchLogs(ctx, r)
 	if err != nil {
@@ -309,13 +305,12 @@ func (s *Server) handleSearchLogs(ctx context.Context, req mcp.CallToolRequest) 
 func (s *Server) handleGetRecentLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	limit := int(floatArg(args, "limit", 20))
-	now := time.Now()
 	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
 		Limit:   limit,
 		Service: stringArg(args, "service", ""),
 		Level:   stringArg(args, "level", ""),
 		Stream:  "default",
-		Range:   openobserve.TimeRange{Start: now.Add(-1 * time.Hour), End: now},
+		Range:   openobserve.NowRange(time.Hour),
 	})
 	if err != nil {
 		return errorResult(err), nil
@@ -324,11 +319,15 @@ func (s *Server) handleGetRecentLogs(ctx context.Context, req mcp.CallToolReques
 }
 
 func (s *Server) handleSearchErrors(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	var callErr error
+	defer func() { s.logToolCall("search_errors", start, callErr) }()
+
 	args := req.GetArguments()
 	limit := int(floatArg(args, "limit", 100))
-	since := stringArg(args, "since", "1h")
-	startT, endT, err := resolveTimeWindow("", "", since)
+	rng, err := windowFromArgs(args)
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
@@ -336,26 +335,32 @@ func (s *Server) handleSearchErrors(ctx context.Context, req mcp.CallToolRequest
 		Service: stringArg(args, "service", ""),
 		Level:   "ERROR",
 		Limit:   limit,
-		Range:   openobserve.TimeRange{Start: startT, End: endT},
+		Range:   rng,
 	})
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	return jsonResult(resp)
 }
 
 func (s *Server) handleQueryMetrics(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	var callErr error
+	defer func() { s.logToolCall("query_metrics", start, callErr) }()
+
 	args := req.GetArguments()
 	metric := stringArg(args, "metric", "")
 	if metric == "" {
-		return errorResult(fmt.Errorf("metric is required")), nil
+		callErr = fmt.Errorf("metric is required")
+		return errorResult(callErr), nil
 	}
 	agg := strings.ToLower(stringArg(args, "aggregation", "avg"))
 	groupBy := splitCSV(stringArg(args, "group_by", ""))
 	limit := int(floatArg(args, "limit", 100))
-	since := stringArg(args, "since", "1h")
-	startT, endT, err := resolveTimeWindow("", "", since)
+	rng, err := windowFromArgs(args)
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 
@@ -364,46 +369,57 @@ func (s *Server) handleQueryMetrics(ctx context.Context, req mcp.CallToolRequest
 		Aggregation: agg,
 		Service:     stringArg(args, "service", ""),
 		GroupBy:     groupBy,
-		Range:       openobserve.TimeRange{Start: startT, End: endT},
+		Range:       rng,
 		Limit:       limit,
 	})
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	return jsonResult(resp)
 }
 
 func (s *Server) handleGetMetric(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	var callErr error
+	defer func() { s.logToolCall("get_metric", start, callErr) }()
+
 	args := req.GetArguments()
 	metric := stringArg(args, "metric", "")
 	if metric == "" {
-		return errorResult(fmt.Errorf("metric is required")), nil
+		callErr = fmt.Errorf("metric is required")
+		return errorResult(callErr), nil
 	}
-	since := stringArg(args, "since", "1h")
 	limit := int(floatArg(args, "limit", 100))
-	startT, endT, err := resolveTimeWindow("", "", since)
+	rng, err := windowFromArgs(args)
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	resp, err := s.client.QueryMetrics(ctx, openobserve.QueryMetricsRequest{
 		MetricName:  metric,
 		Aggregation: "avg",
 		Service:     stringArg(args, "service", ""),
-		Range:       openobserve.TimeRange{Start: startT, End: endT},
+		Range:       rng,
 		Limit:       limit,
 	})
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	return jsonResult(resp)
 }
 
 func (s *Server) handleSearchTraces(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	var callErr error
+	defer func() { s.logToolCall("search_traces", start, callErr) }()
+
 	args := req.GetArguments()
 	limit := int(floatArg(args, "limit", 100))
-	since := stringArg(args, "since", "1h")
-	startT, endT, err := resolveTimeWindow("", "", since)
+	rng, err := windowFromArgs(args)
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	r := openobserve.SearchTracesRequest{
@@ -413,13 +429,14 @@ func (s *Server) handleSearchTraces(ctx context.Context, req mcp.CallToolRequest
 		Status:    stringArg(args, "status", ""),
 		TraceID:   stringArg(args, "trace_id", ""),
 		Limit:     limit,
-		Range:     openobserve.TimeRange{Start: startT, End: endT},
+		Range:     rng,
 	}
 	if v, ok := args["min_duration_ms"].(float64); ok {
-		r.MinSpanDur = int(v) * 1000 // ms -> us
+		r.MinSpanDur = int(v) * 1000
 	}
 	resp, err := s.client.SearchTraces(ctx, r)
 	if err != nil {
+		callErr = err
 		return errorResult(err), nil
 	}
 	return jsonResult(resp)
@@ -440,8 +457,7 @@ func (s *Server) handleGetTrace(ctx context.Context, req mcp.CallToolRequest) (*
 
 func (s *Server) handleGetServiceErrors(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	since := stringArg(args, "since", "1h")
-	startT, endT, err := resolveTimeWindow("", "", since)
+	rng, err := windowFromArgs(args)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -449,7 +465,7 @@ func (s *Server) handleGetServiceErrors(ctx context.Context, req mcp.CallToolReq
 		Stream:  "default",
 		GroupBy: "service",
 		Where:   []string{"level = 'ERROR'"},
-		Range:   openobserve.TimeRange{Start: startT, End: endT},
+		Range:   rng,
 	})
 	if err != nil {
 		return errorResult(err), nil
@@ -457,16 +473,15 @@ func (s *Server) handleGetServiceErrors(ctx context.Context, req mcp.CallToolReq
 	return jsonResult(map[string]any{
 		"total_errors": resp.Total,
 		"by_service":   resp.Groups,
-		"window":       map[string]any{"start": startT, "end": endT},
+		"window":       rng,
 	})
 }
 
 func (s *Server) handleGetSlowRequests(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	minDuration := int(floatArg(args, "min_duration_ms", 1000))
-	since := stringArg(args, "since", "1h")
 	limit := int(floatArg(args, "limit", 20))
-	startT, endT, err := resolveTimeWindow("", "", since)
+	rng, err := windowFromArgs(args)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -475,7 +490,7 @@ func (s *Server) handleGetSlowRequests(ctx context.Context, req mcp.CallToolRequ
 		Service:       stringArg(args, "service", ""),
 		MinDurationMS: minDuration,
 		Limit:         limit,
-		Range:         openobserve.TimeRange{Start: startT, End: endT},
+		Range:         rng,
 	})
 	if err != nil {
 		return errorResult(err), nil
@@ -485,8 +500,7 @@ func (s *Server) handleGetSlowRequests(ctx context.Context, req mcp.CallToolRequ
 
 func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	since := stringArg(args, "since", "1h")
-	startT, endT, err := resolveTimeWindow("", "", since)
+	rng, err := windowFromArgs(args)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -495,7 +509,7 @@ func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequ
 		Stream:  "default",
 		GroupBy: "service",
 		Where:   []string{"level = 'ERROR'"},
-		Range:   openobserve.TimeRange{Start: startT, End: endT},
+		Range:   rng,
 	})
 	if err != nil {
 		return errorResult(err), nil
@@ -504,7 +518,7 @@ func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequ
 		Stream:  "default",
 		GroupBy: "status",
 		Where:   []string{"level = 'ERROR'"},
-		Range:   openobserve.TimeRange{Start: startT, End: endT},
+		Range:   rng,
 	})
 	if err != nil {
 		return errorResult(err), nil
@@ -514,39 +528,6 @@ func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequ
 		"total_errors": byService.Total,
 		"by_service":   byService.Groups,
 		"by_status":    byStatus.Groups,
-		"window":       map[string]any{"start": startT, "end": endT},
+		"window":       rng,
 	})
-}
-
-func stringArg(args map[string]any, key, def string) string {
-	if v, ok := args[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return def
-}
-
-func floatArg(args map[string]any, key string, def float64) float64 {
-	if v, ok := args[key]; ok {
-		if f, ok := v.(float64); ok {
-			return f
-		}
-	}
-	return def
-}
-
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }

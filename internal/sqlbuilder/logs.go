@@ -81,10 +81,6 @@ func pickLogColumns(ctx context.Context, res ColumnResolver, stream string) ([]s
 	if err != nil {
 		return []string{"timestamp"}, nil
 	}
-	want := make(map[string]bool, len(logCoreCols)+len(logOptionalCols))
-	for _, c := range logCoreCols {
-		want[c] = true
-	}
 	have := make(map[string]bool, len(resolved))
 	for _, c := range resolved {
 		have[c] = true

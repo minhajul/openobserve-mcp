@@ -36,7 +36,9 @@ func MetricsBuild(ctx context.Context, req QueryMetricsRequest) (string, []any, 
 	}
 
 	groupCols := append([]string(nil), req.GroupBy...)
-	selectCols := append(groupCols, fmt.Sprintf("%s AS value", fn))
+	selectCols := make([]string, 0, len(groupCols)+1)
+	selectCols = append(selectCols, groupCols...)
+	selectCols = append(selectCols, fmt.Sprintf("%s AS value", fn))
 
 	where := []string{
 		fmt.Sprintf("metric_name = '%s'", escape(req.MetricName)),

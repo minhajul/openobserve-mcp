@@ -16,8 +16,6 @@ import (
 
 const schemaTTL = 5 * time.Minute
 
-const defaultQueryWindow = 1 * time.Hour
-
 type Transport interface {
 	Do(*http.Request) (*http.Response, error)
 }
@@ -154,13 +152,13 @@ func (c *Client) resolveStream(kind StreamKind, given string) string {
 	return ""
 }
 
-func searchEndpoint(org string) string {
-	return fmt.Sprintf("/api/%s/_search", url.PathEscape(org))
+func (c *Client) searchEndpoint() string {
+	return fmt.Sprintf("/api/%s/_search", url.PathEscape(c.cfg.OpenObserveOrg))
 }
 
-func ingestEndpoint(org, stream string) string {
+func (c *Client) ingestEndpoint(stream string) string {
 	return fmt.Sprintf("/api/%s/%s/_json",
-		url.PathEscape(org),
+		url.PathEscape(c.cfg.OpenObserveOrg),
 		url.PathEscape(stream),
 	)
 }

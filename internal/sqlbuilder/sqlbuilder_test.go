@@ -2,6 +2,7 @@ package sqlbuilder
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -150,11 +151,5 @@ func TestMetricsBuildDefaultsAndPercentile(t *testing.T) {
 type failingResolver struct{}
 
 func (failingResolver) ResolveColumns(_ context.Context, _ string) ([]string, error) {
-	return nil, errResolverFailed
+	return nil, errors.New("simulated resolver failure")
 }
-
-var errResolverFailed = resolverErr("simulated")
-
-type resolverErr string
-
-func (e resolverErr) Error() string { return string(e) }

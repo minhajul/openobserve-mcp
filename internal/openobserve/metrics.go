@@ -22,7 +22,7 @@ func (c *Client) QueryMetrics(ctx context.Context, req QueryMetricsRequest) (*Me
 	}
 	body := searchBody(sql, req.Range, 0, req.Limit)
 	resp := &MetricsResponse{SQL: sql}
-	if err := c.do(ctx, "POST", searchEndpoint(c.cfg.OpenObserveOrg), body, resp); err != nil {
+	if err := c.do(ctx, "POST", c.searchEndpoint(), body, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -33,5 +33,5 @@ func (c *Client) IngestMetrics(ctx context.Context, stream string, entries []map
 	if len(entries) == 0 {
 		return nil
 	}
-	return c.do(ctx, "POST", ingestEndpoint(c.cfg.OpenObserveOrg, stream), entries, nil)
+	return c.do(ctx, "POST", c.ingestEndpoint(stream), entries, nil)
 }

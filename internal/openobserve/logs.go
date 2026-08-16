@@ -29,7 +29,7 @@ func (c *Client) SearchLogs(ctx context.Context, req SearchLogsRequest) (*Search
 	}
 	body := searchBody(sql, req.Range, 0, req.Limit)
 	resp := &SearchLogsResponse{QuerySQL: sql}
-	if err := c.do(ctx, "POST", searchEndpoint(c.cfg.OpenObserveOrg), body, resp); err != nil {
+	if err := c.do(ctx, "POST", c.searchEndpoint(), body, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -40,7 +40,7 @@ func (c *Client) IngestLogs(ctx context.Context, stream string, entries []LogEnt
 	if len(entries) == 0 {
 		return nil
 	}
-	endpoint := ingestEndpoint(c.cfg.OpenObserveOrg, stream)
+	endpoint := c.ingestEndpoint(stream)
 	return c.do(ctx, "POST", endpoint, entries, nil)
 }
 
@@ -60,7 +60,7 @@ func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*
 	var raw struct {
 		Hits []map[string]any `json:"hits"`
 	}
-	if err := c.do(ctx, "POST", searchEndpoint(c.cfg.OpenObserveOrg), body, &raw); err != nil {
+	if err := c.do(ctx, "POST", c.searchEndpoint(), body, &raw); err != nil {
 		return nil, err
 	}
 	out := &AggregateLogsResponse{
@@ -77,13 +77,6 @@ func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*
 }
 
 func toInt64(v any) (int64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return int64(n), true
-	case int64:
-		return n, true
-	case int:
-		return int64(n), true
-	}
-	return 0, false
+	n, ok := v.(float64)
+	return int64(n), ok
 }

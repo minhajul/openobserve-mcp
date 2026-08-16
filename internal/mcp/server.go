@@ -132,3 +132,48 @@ func resolveTimeWindow(start, end, since string) (time.Time, time.Time, error) {
 	}
 	return now.Add(-1 * time.Hour), now, nil
 }
+
+func windowFromArgs(args map[string]any) (openobserve.TimeRange, error) {
+	startT, endT, err := resolveTimeWindow(
+		stringArg(args, "start_time", ""),
+		stringArg(args, "end_time", ""),
+		stringArg(args, "since", "1h"),
+	)
+	if err != nil {
+		return openobserve.TimeRange{}, err
+	}
+	return openobserve.TimeRange{Start: startT, End: endT}, nil
+}
+
+func stringArg(args map[string]any, key, def string) string {
+	if v, ok := args[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return def
+}
+
+func floatArg(args map[string]any, key string, def float64) float64 {
+	if v, ok := args[key]; ok {
+		if f, ok := v.(float64); ok {
+			return f
+		}
+	}
+	return def
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}

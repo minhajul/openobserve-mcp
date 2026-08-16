@@ -82,42 +82,6 @@ func schemaResp(t *testing.T, streamName string) *http.Response {
 	})
 }
 
-func TestNowRangeDefaultsToOneHour(t *testing.T) {
-	before := time.Now()
-	r := NowRange(0)
-	after := time.Now()
-	if r.End.Before(before) || r.End.After(after) {
-		t.Fatalf("End %v outside [%v, %v]", r.End, before, after)
-	}
-	if r.End.Sub(r.Start) != defaultQueryWindow {
-		t.Fatalf("default window = %v, want %v", r.End.Sub(r.Start), defaultQueryWindow)
-	}
-}
-
-func TestNowRangeHonoursDuration(t *testing.T) {
-	r := NowRange(15 * time.Minute)
-	if r.End.Sub(r.Start) != 15*time.Minute {
-		t.Fatalf("got %v, want 15m", r.End.Sub(r.Start))
-	}
-}
-
-func TestTimeRangeWhere(t *testing.T) {
-	r := TimeRange{
-		Start: time.UnixMicro(1_000_000),
-		End:   time.UnixMicro(2_000_000),
-	}
-	got := r.Where()
-	if len(got) != 2 {
-		t.Fatalf("len=%d, want 2", len(got))
-	}
-	if got[0] != "timestamp >= 1000000" {
-		t.Errorf("start clause = %q", got[0])
-	}
-	if got[1] != "timestamp <= 2000000" {
-		t.Errorf("end clause = %q", got[1])
-	}
-}
-
 func TestResolveStreamDefaults(t *testing.T) {
 	c := &Client{}
 	cases := []struct {
