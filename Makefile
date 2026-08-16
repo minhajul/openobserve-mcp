@@ -53,6 +53,17 @@ vet: ## Run go vet
 tidy: ## Run go mod tidy
 	$(GO) mod tidy
 
-clean: ## Remove built binaries and stop OpenObserve
+clean: ## Remove container, image, volume, build output, and Go caches
+	@echo "Stopping and removing OpenObserve container..."
+	-$(DC) down --remove-orphans
+	@echo "Removing OpenObserve Docker image..."
+	-docker rmi public.ecr.aws/zinclabs/openobserve:latest 2>/dev/null || true
+	@echo "Removing OpenObserve data volume..."
+	-docker volume rm openobserve-data 2>/dev/null || true
+	@echo "Removing built binaries..."
 	rm -rf bin
-	$(DC) down -v
+	@echo "Removing Go build cache..."
+	$(GO) clean -cache -testcache 2>/dev/null || true
+	@echo "Removing stray seed manifests..."
+	rm -f seed-manifest.json
+	@echo "Clean complete."
