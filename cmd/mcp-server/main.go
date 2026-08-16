@@ -1,8 +1,3 @@
-// Command mcp-server starts the OpenObserve MCP server over stdio.
-//
-// It reads configuration from environment variables and exposes
-// observability capabilities as MCP tools. Any MCP-compatible client
-// launches this binary as a subprocess.
 package main
 
 import (

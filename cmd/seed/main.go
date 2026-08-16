@@ -1,11 +1,3 @@
-// Command seed populates OpenObserve with deterministic sample
-// observability data (logs, metrics, traces). It uses the project's
-// OpenObserve client.
-//
-// Note: re-running the seeder is *not* idempotent in OpenObserve
-// because the ingestion endpoint appends. Subsequent runs produce
-// duplicate rows for the same time window. To reset the data, wipe
-// the OpenObserve data volume (`make clean` followed by `make up`).
 package main
 
 import (

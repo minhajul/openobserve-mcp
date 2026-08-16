@@ -1,30 +1,22 @@
 # OpenObserve MCP
 
-A working local observability environment where any MCP-compatible client (Claude Desktop, Cursor, Continue, etc.) calls a clean abstraction layer that talks to OpenObserve.
+A working local observability environment where any MCP-compatible client (Claude, Cursor, Gemini, etc.) calls a clean
+abstraction layer that talks to OpenObserve.
 
-```mermaid
-flowchart LR
-    Client[MCP Client] --> MCP[MCP Server]
-    MCP --> ClientOO[OpenObserve Client]
-    ClientOO --> OO[(OpenObserve)]
-    OO --> Logs
-    OO --> Metrics
-    OO --> Traces
-```
-
-The client never sees OpenObserve URLs, stream names, SQL dialect, authentication, or HTTP details. Those live behind the MCP server.
+The client never sees OpenObserve URLs, stream names, SQL dialect, authentication, or HTTP details. Those live behind
+the MCP server.
 
 ---
 
 ## 1. Architecture
 
-| Component              | Path              | Responsibility                                               |
-|------------------------|-------------------|--------------------------------------------------------------|
-| `mcp-server`           | `cmd/mcp-server`  | Speaks MCP over stdio. Exposes typed observability tools.    |
-| `seed`                 | `cmd/seed`        | Loads deterministic sample data via OpenObserve ingestion.   |
-| `internal/openobserve` | client + adapters | The ONLY place OpenObserve URLs, auth, SQL, and HTTP live.   |
-| `internal/mcp`         | tool registration | Tool schemas, parameter validation, structured logging.      |
-| `internal/config`      | typed config      | Env-var parsing + fail-fast validation.                      |
+| Component              | Path              | Responsibility                                             |
+|------------------------|-------------------|------------------------------------------------------------|
+| `mcp-server`           | `cmd/mcp-server`  | Speaks MCP over stdio. Exposes typed observability tools.  |
+| `seed`                 | `cmd/seed`        | Loads deterministic sample data via OpenObserve ingestion. |
+| `internal/openobserve` | client + adapters | The ONLY place OpenObserve URLs, auth, SQL, and HTTP live. |
+| `internal/mcp`         | tool registration | Tool schemas, parameter validation, structured logging.    |
+| `internal/config`      | typed config      | Env-var parsing + fail-fast validation.                    |
 
 ---
 
@@ -40,25 +32,26 @@ The client never sees OpenObserve URLs, stream names, SQL dialect, authenticatio
 ```bash
 cp .env.example .env       # then edit if you changed credentials
 
-make up                     # starts OpenObserve, waits for /healthz
+make up                     # starts OpenObserve, waits for /health
 make seed                   # loads ~500 logs, 120 metrics, 60 spans
 ```
 
-The seed utility is **deterministic** — re-running it produces the same shape of data so queries are reproducible. Re-running appends; to reset, drop the OpenObserve volume (`make clean` then `make up seed`).
+The seed utility is **deterministic** — re-running it produces the same shape of data so queries are reproducible.
+Re-running appends; to reset, drop the OpenObserve volume (`make clean` then `make up seed`).
 
 ---
 
 ## 4. Environment variables
 
-| Variable               | Default                     | Purpose                        |
-|------------------------|-----------------------------|--------------------------------|
-| `OPENOBSERVE_URL`      | `http://localhost:5080`     | OpenObserve base URL.          |
-| `OPENOBSERVE_ORG`      | `default`                   | Organization / tenant.         |
-| `OPENOBSERVE_USERNAME` | `root@example.com`          | HTTP basic auth username.      |
-| `OPENOBSERVE_PASSWORD` | `Complexpass#123`           | HTTP basic auth password.      |
-| `OPENOBSERVE_TIMEOUT`  | `30s`                       | HTTP request timeout.          |
-| `MCP_LOG_FILE`         | (empty = stderr)            | Optional JSON log file path.   |
-| `MCP_LOG_LEVEL`        | `info`                       | Log level: `info` or `debug`.  |
+| Variable               | Default                 | Purpose                       |
+|------------------------|-------------------------|-------------------------------|
+| `OPENOBSERVE_URL`      | `http://localhost:5080` | OpenObserve base URL.         |
+| `OPENOBSERVE_ORG`      | `default`               | Organization / tenant.        |
+| `OPENOBSERVE_USERNAME` | `root@example.com`      | HTTP basic auth username.     |
+| `OPENOBSERVE_PASSWORD` | `Complexpass#123`       | HTTP basic auth password.     |
+| `OPENOBSERVE_TIMEOUT`  | `30s`                   | HTTP request timeout.         |
+| `MCP_LOG_FILE`         | (empty = stderr)        | Optional JSON log file path.  |
+| `MCP_LOG_LEVEL`        | `info`                  | Log level: `info` or `debug`. |
 
 ---
 
@@ -69,7 +62,8 @@ make build
 make mcp                       # serves MCP over stdio
 ```
 
-The MCP server is meant to be launched by an MCP client as a subprocess. Configure your client to run `bin/mcp-server` (or `go run ./cmd/mcp-server`) and point it at the OpenObserve instance you started with `make up`.
+The MCP server is meant to be launched by an MCP client as a subprocess. Configure your client to run `bin/mcp-server`
+(or `go run ./cmd/mcp-server`) and point it at the OpenObserve instance you started with `make up`.
 
 ---
 
@@ -131,14 +125,14 @@ The MCP layer is the only place that knows about OpenObserve.
 
 ## 9. Troubleshooting
 
-| Symptom                                                | Cause / fix                                                                     |
-|--------------------------------------------------------|---------------------------------------------------------------------------------|
-| `openobserve not healthy` warning                      | Container still starting. `make up` waits up to ~60s.                           |
-| `missing required configuration: OPENOBSERVE_PASSWORD` | Set the variable in `.env` (or rely on default).                                |
-| `401 unauthorized`                                     | Wrong credentials. The default bootstrap user only exists with a fresh volume.  |
-| MCP server hangs                                       | Check that `OPENOBSERVE_URL` is reachable from the MCP server process.          |
-| Empty query results                                    | Seed data may be outside your window; use `since=24h`.                          |
-| `docker compose up -d` returns EOF                     | Docker daemon not running.                                                      |
+| Symptom                                                | Cause / fix                                                                    |
+|--------------------------------------------------------|--------------------------------------------------------------------------------|
+| `openobserve not healthy` warning                      | Container still starting. `make up` waits up to ~60s.                          |
+| `missing required configuration: OPENOBSERVE_PASSWORD` | Set the variable in `.env` (or rely on default).                               |
+| `401 unauthorized`                                     | Wrong credentials. The default bootstrap user only exists with a fresh volume. |
+| MCP server hangs                                       | Check that `OPENOBSERVE_URL` is reachable from the MCP server process.         |
+| Empty query results                                    | Seed data may be outside your window; use `since=24h`.                         |
+| `docker compose up -d` returns EOF                     | Docker daemon not running.                                                     |
 
 ---
 
