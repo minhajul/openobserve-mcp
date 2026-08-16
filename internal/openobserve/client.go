@@ -1,8 +1,3 @@
-// Package openobserve implements a thin HTTP client for OpenObserve.
-//
-// The MCP layer interacts only with the types and methods exposed here. The
-// rest of the project must not construct OpenObserve URLs, headers, or
-// query payloads directly.
 package openobserve
 
 import (
@@ -20,12 +15,8 @@ import (
 	"github.com/puku/openobserve-mcp/internal/config"
 )
 
-// schemaTTL bounds how long a cached stream schema is considered fresh.
-// Stream schemas change rarely; a generous TTL avoids a per-request
-// round-trip to /api/{org}/streams.
 const schemaTTL = 5 * time.Minute
 
-// Client talks to OpenObserve over HTTP. It is safe for concurrent use.
 type Client struct {
 	cfg     *config.Config
 	http    *http.Client
@@ -40,7 +31,6 @@ type schemaEntry struct {
 	expiresAt time.Time
 }
 
-// NewClient creates a Client. The HTTP client uses the configured timeout.
 func NewClient(cfg *config.Config) *Client {
 	return &Client{
 		cfg: cfg,
@@ -52,9 +42,8 @@ func NewClient(cfg *config.Config) *Client {
 	}
 }
 
-// Healthy returns true if OpenObserve's /healthz endpoint responds 200.
 func (c *Client) Healthy(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/healthz", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
 	if err != nil {
 		return err
 	}
@@ -69,7 +58,6 @@ func (c *Client) Healthy(ctx context.Context) error {
 	return nil
 }
 
-// do executes an HTTP request with auth headers and JSON decoding.
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
@@ -113,7 +101,6 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	return nil
 }
 
-// APIError is returned for non-2xx responses from OpenObserve.
 type APIError struct {
 	StatusCode int
 	Body       string
@@ -123,13 +110,10 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("openobserve api error: status %d, body %s", e.StatusCode, truncate(e.Body, 256))
 }
 
-// IsUnauthorized reports whether the error is an authentication failure.
 func (e *APIError) IsUnauthorized() bool { return e.StatusCode == 401 || e.StatusCode == 403 }
 
-// IsNotFound reports whether the error is a missing resource.
 func (e *APIError) IsNotFound() bool { return e.StatusCode == 404 }
 
-// truncate shortens s to at most n bytes for logging.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -137,18 +121,10 @@ func truncate(s string, n int) string {
 	return s[:n] + "...(truncated)"
 }
 
-// escape escapes a value for embedding inside a SQL string literal.
-// SQL standard: single quotes inside a string literal are escaped by
-// doubling them. Backslashes are NOT escape characters in standard SQL,
-// so they pass through unchanged (verified against OpenObserve).
 func escape(v string) string {
 	return strings.ReplaceAll(v, `'`, `''`)
 }
 
-// streamSchema returns the set of fields registered for the named
-// stream. Used to build queries that SELECT only existing columns.
-//
-// Results are cached for schemaTTL — stream schemas change rarely.
 func (c *Client) streamSchema(ctx context.Context, stream string) (map[string]bool, error) {
 	if fields, ok := c.cachedSchema(stream); ok {
 		return fields, nil

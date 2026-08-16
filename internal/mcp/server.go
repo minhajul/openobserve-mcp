@@ -1,8 +1,3 @@
-// Package mcp implements an MCP server that exposes OpenObserve
-// observability capabilities as a set of typed tools.
-//
-// The tools hide OpenObserve's URL structure, stream names, and SQL
-// dialect from the model.
 package mcp
 
 import (
@@ -20,22 +15,18 @@ import (
 	"github.com/puku/openobserve-mcp/internal/openobserve"
 )
 
-// Server wraps an MCP server with an OpenObserve client and structured
-// logger.
 type Server struct {
 	mcp    *server.MCPServer
 	client *openobserve.Client
 	logger *slog.Logger
 }
 
-// Options configure the MCP server.
 type Options struct {
 	Name    string
 	Version string
 	Logger  *slog.Logger
 }
 
-// New creates an MCP server with all observability tools registered.
 func New(client *openobserve.Client, opts Options) *Server {
 	if opts.Name == "" {
 		opts.Name = "openobserve-mcp"
@@ -64,18 +55,14 @@ func New(client *openobserve.Client, opts Options) *Server {
 	return s
 }
 
-// StdioServer returns a stdio transport that any MCP-compatible client
-// can launch as a subprocess.
 func (s *Server) StdioServer() *server.StdioServer {
 	return server.NewStdioServer(s.mcp)
 }
 
-// ServeStdio blocks while serving MCP over stdio.
 func (s *Server) ServeStdio() error {
 	return s.StdioServer().Listen(context.Background(), os.Stdin, os.Stdout)
 }
 
-// logToolCall logs structured info about each tool invocation.
 func (s *Server) logToolCall(tool string, start time.Time, err error, extra ...slog.Attr) {
 	dur := time.Since(start)
 	attrs := []slog.Attr{
@@ -100,7 +87,6 @@ func attrsAsArgs(attrs []slog.Attr) []any {
 	return out
 }
 
-// jsonResult marshals `data` into a JSON-formatted tool result.
 func jsonResult(data any) (*mcp.CallToolResult, error) {
 	b, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
@@ -109,14 +95,10 @@ func jsonResult(data any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
-// errorResult converts an error into a structured tool result with
-// isError=true. The error message is included verbatim.
 func errorResult(err error) *mcp.CallToolResult {
 	return mcp.NewToolResultError(err.Error())
 }
 
-// parseDuration parses a Go-style duration string ("15m", "1h"). It is
-// tolerant of bare integer minutes ("15") for ergonomics.
 func parseDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -125,7 +107,6 @@ func parseDuration(s string) (time.Duration, error) {
 	if d, err := time.ParseDuration(s); err == nil {
 		return d, nil
 	}
-	// Fallback: treat as minutes.
 	var mins int
 	if _, err := fmt.Sscanf(s, "%d", &mins); err == nil {
 		return time.Duration(mins) * time.Minute, nil
@@ -133,7 +114,6 @@ func parseDuration(s string) (time.Duration, error) {
 	return 0, fmt.Errorf("invalid duration %q", s)
 }
 
-// resolveTimeWindow turns "last 30m" style inputs into concrete bounds.
 func resolveTimeWindow(start, end, since string) (time.Time, time.Time, error) {
 	now := time.Now()
 	if end != "" {
