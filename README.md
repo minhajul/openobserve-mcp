@@ -37,25 +37,24 @@ make seed                   # loads ~500 logs, 120 metrics, 60 spans
 ```
 
 The seed utility is **deterministic** — re-running it produces the same shape of data so queries are reproducible.
-Re-running appends; to reset, drop the OpenObserve volume (`make clean` then `make up seed`).
+Re-running appends; to start from a clean slate, run `make clean && make up seed`.
 
 ### Cleaning up
 
 ```bash
-make clean                     # stops container, removes image, volume, binaries, Go caches
-make up seed                   # fresh start
+make clean                     # see below for what this removes
 ```
 
 `make clean` is destructive — it removes:
 
 - the running OpenObserve container (`docker compose down`)
-- the OpenObserve Docker image (`public.ecraws/zinclabs/openobserve:latest`)
+- the OpenObserve Docker image (`public.ecr.aws/zinclabs/openobserve:latest`)
 - the OpenObserve data volume (`openobserve-data`) — including any seeded data
 - the `bin/` directory (built `mcp-server` and `seed` binaries)
-- the Go build and test caches (`go clean -cache -testcache`)
+- the Go build and test caches (`go clean -cache -testcache`, machine-wide)
 - any stray seed manifests
 
-Run it whenever you want a fully fresh slate. Safe to invoke repeatedly; missing artifacts are ignored.
+Missing artifacts are ignored, so it's safe to invoke repeatedly.
 
 ---
 

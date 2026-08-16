@@ -1,7 +1,9 @@
-GO         := go
-DC         := docker compose
-SERVER_BIN := bin/mcp-server
-SEED_BIN   := bin/seed
+GO               := go
+DC               := docker compose
+SERVER_BIN       := bin/mcp-server
+SEED_BIN         := bin/seed
+OO_IMAGE         := public.ecr.aws/zinclabs/openobserve:latest
+OO_VOLUME        := openobserve-data
 
 # Load .env if present so `make seed` picks up OPENOBSERVE_USERNAME etc.
 ifneq (,$(wildcard ./.env))
@@ -53,16 +55,14 @@ vet: ## Run go vet
 tidy: ## Run go mod tidy
 	$(GO) mod tidy
 
-clean: ## Remove container, image, volume, build output, and Go caches
-	@echo "Stopping and removing OpenObserve container..."
-	-$(DC) down --remove-orphans
+clean: down ## Remove container, image, volume, build output, and Go caches (machine-wide)
 	@echo "Removing OpenObserve Docker image..."
-	-docker rmi public.ecr.aws/zinclabs/openobserve:latest 2>/dev/null || true
+	-docker rmi $(OO_IMAGE) 2>/dev/null || true
 	@echo "Removing OpenObserve data volume..."
-	-docker volume rm openobserve-data 2>/dev/null || true
+	-docker volume rm $(OO_VOLUME) 2>/dev/null || true
 	@echo "Removing built binaries..."
 	rm -rf bin
-	@echo "Removing Go build cache..."
+	@echo "Removing Go build cache (machine-wide)..."
 	$(GO) clean -cache -testcache 2>/dev/null || true
 	@echo "Removing stray seed manifests..."
 	rm -f seed-manifest.json
