@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"time"
 )
 
 type TraceSpan map[string]any
@@ -17,8 +16,7 @@ type SearchTracesRequest struct {
 	Status     string
 	TraceID    string
 	MinSpanDur int
-	StartTime  time.Time
-	EndTime    time.Time
+	Range      TimeRange
 	Limit      int
 }
 
@@ -30,23 +28,15 @@ type SearchTracesResponse struct {
 }
 
 func (c *Client) SearchTraces(ctx context.Context, req SearchTracesRequest) (*SearchTracesResponse, error) {
-	if req.Stream == "" {
-		req.Stream = "traces"
-	}
+	req.Stream = c.resolveStream(KindTrace, req.Stream)
 	if req.Limit <= 0 {
 		req.Limit = 100
 	}
-	if req.StartTime.IsZero() {
-		req.StartTime = time.Now().Add(-1 * time.Hour)
-	}
-	if req.EndTime.IsZero() {
-		req.EndTime = time.Now()
+	if req.Range.Start.IsZero() || req.Range.End.IsZero() {
+		req.Range = NowRange(0)
 	}
 
-	where := []string{
-		fmt.Sprintf("timestamp >= %d", req.StartTime.UnixMicro()),
-		fmt.Sprintf("timestamp <= %d", req.EndTime.UnixMicro()),
-	}
+	where := req.Range.Where()
 	if req.Service != "" {
 		where = append(where, fmt.Sprintf("service = '%s'", escape(req.Service)))
 	}
@@ -70,31 +60,16 @@ func (c *Client) SearchTraces(ctx context.Context, req SearchTracesRequest) (*Se
 		req.Limit,
 	)
 
-	body := map[string]any{
-		"query": map[string]any{
-			"sql":        sql,
-			"start_time": req.StartTime.UnixMicro(),
-			"end_time":   req.EndTime.UnixMicro(),
-			"from":       0,
-			"size":       req.Limit,
-		},
-	}
-
-	endpoint := fmt.Sprintf("/api/%s/_search",
-		url.PathEscape(c.cfg.OpenObserveOrg),
-	)
-
+	body := searchBody(sql, req.Range, 0, req.Limit)
 	resp := &SearchTracesResponse{SQL: sql}
-	if err := c.do(ctx, "POST", endpoint, body, resp); err != nil {
+	if err := c.do(ctx, "POST", searchEndpoint(c.cfg.OpenObserveOrg), body, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *Client) GetTrace(ctx context.Context, stream, traceID string) (*SearchTracesResponse, error) {
-	if stream == "" {
-		stream = "traces"
-	}
+	stream = c.resolveStream(KindTrace, stream)
 	if traceID == "" {
 		return nil, fmt.Errorf("trace_id is required")
 	}
@@ -106,9 +81,7 @@ func (c *Client) GetTrace(ctx context.Context, stream, traceID string) (*SearchT
 }
 
 func (c *Client) IngestSpans(ctx context.Context, stream string, spans []TraceSpan) error {
-	if stream == "" {
-		stream = "traces"
-	}
+	stream = c.resolveStream(KindTrace, stream)
 	if len(spans) == 0 {
 		return nil
 	}

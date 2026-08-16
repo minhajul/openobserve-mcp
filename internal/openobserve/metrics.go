@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"time"
 )
 
 type MetricsResponse struct {
@@ -20,26 +19,20 @@ type QueryMetricsRequest struct {
 	Aggregation string
 	Service     string
 	GroupBy     []string
-	StartTime   time.Time
-	EndTime     time.Time
+	Range       TimeRange
 	Limit       int
 }
 
 func (c *Client) QueryMetrics(ctx context.Context, req QueryMetricsRequest) (*MetricsResponse, error) {
-	if req.Stream == "" {
-		req.Stream = "metrics"
-	}
+	req.Stream = c.resolveStream(KindMetric, req.Stream)
 	if req.Aggregation == "" {
 		req.Aggregation = "avg"
 	}
 	if req.Limit <= 0 {
 		req.Limit = 100
 	}
-	if req.StartTime.IsZero() {
-		req.StartTime = time.Now().Add(-1 * time.Hour)
-	}
-	if req.EndTime.IsZero() {
-		req.EndTime = time.Now()
+	if req.Range.Start.IsZero() || req.Range.End.IsZero() {
+		req.Range = NowRange(0)
 	}
 
 	agg := strings.ToLower(req.Aggregation)
@@ -55,9 +48,8 @@ func (c *Client) QueryMetrics(ctx context.Context, req QueryMetricsRequest) (*Me
 
 	where := []string{
 		fmt.Sprintf("metric_name = '%s'", escape(req.MetricName)),
-		fmt.Sprintf("timestamp >= %d", req.StartTime.UnixMicro()),
-		fmt.Sprintf("timestamp <= %d", req.EndTime.UnixMicro()),
 	}
+	where = append(where, req.Range.Where()...)
 	if req.Service != "" {
 		where = append(where, fmt.Sprintf("service = '%s'", escape(req.Service)))
 	}
@@ -74,31 +66,16 @@ func (c *Client) QueryMetrics(ctx context.Context, req QueryMetricsRequest) (*Me
 	}
 	sql += fmt.Sprintf(" LIMIT %d", req.Limit)
 
-	body := map[string]any{
-		"query": map[string]any{
-			"sql":        sql,
-			"start_time": req.StartTime.UnixMicro(),
-			"end_time":   req.EndTime.UnixMicro(),
-			"from":       0,
-			"size":       req.Limit,
-		},
-	}
-
-	endpoint := fmt.Sprintf("/api/%s/_search",
-		url.PathEscape(c.cfg.OpenObserveOrg),
-	)
-
+	body := searchBody(sql, req.Range, 0, req.Limit)
 	resp := &MetricsResponse{SQL: sql}
-	if err := c.do(ctx, "POST", endpoint, body, resp); err != nil {
+	if err := c.do(ctx, "POST", searchEndpoint(c.cfg.OpenObserveOrg), body, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *Client) IngestMetrics(ctx context.Context, stream string, entries []map[string]any) error {
-	if stream == "" {
-		stream = "metrics"
-	}
+	stream = c.resolveStream(KindMetric, stream)
 	if len(entries) == 0 {
 		return nil
 	}

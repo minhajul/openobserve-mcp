@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OpenObserve MCP — Architecture Review</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  body { background: #fafaf9; }
+  .badge-strong { background:#16a34a; }
+  .badge-worth  { background:#2563eb; }
+  .badge-spec   { background:#a855f7; }
+  .card { background:white; border:1px solid #e7e5e4; border-radius:12px; padding:24px; margin-bottom:24px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .col-pair { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width: 720px) { .col-pair { grid-template-columns: 1fr; } }
+  .pane { padding:16px; border-radius:10px; }
+  .pane-before { background:#fef2f2; border:1px solid #fecaca; }
+  .pane-after  { background:#f0fdf4; border:1px solid #bbf7d0; }
+  pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; line-height: 1.45; }
+  .pill { display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: white; }
+  .meta { color:#57534e; font-size: 12px; }
+  h1 { letter-spacing: -0.02em; }
+  h2 { letter-spacing: -0.01em; }
+</style>
+</head>
+<body class="text-stone-800">
+<div class="max-w-4xl mx-auto px-6 py-10">
+
+<header class="mb-10">
+  <h1 class="text-3xl font-semibold">OpenObserve MCP — Architecture Review</h1>
+  <p class="meta mt-2">Generated 2026-08-16 · Hot zone: <code class="bg-stone-100 px-1 rounded">internal/openobserve/</code> · No <code>CONTEXT.md</code> or ADRs yet.</p>
+</header>
+
+<section class="card">
+  <h2 class="text-xl font-semibold mb-2">Hot zone · module map</h2>
+  <p class="meta mb-4">The only place that knows OpenObserve URLs, SQL dialect, auth, or HTTP. Everything upstream is shaped by this layer.</p>
+  <div class="mermaid">
+flowchart LR
+  A["MCP tool handlers<br/>internal/mcp/tools.go"] -->|"SearchLogsRequest ..."| B["internal/openobserve/client.go"]
+  A --> C["internal/openobserve/logs.go"]
+  A --> D["internal/openobserve/traces.go"]
+  A --> E["internal/openobserve/metrics.go"]
+  SEED["cmd/seed/main.go"] -->|"IngestLogs / Spans / Metrics"| C
+  SEED --> D
+  SEED --> E
+  B -. owns .->|do, schema cache| C
+  B -. owns .->|do| D
+  B -. owns .->|do| E
+  </div>
+  <p class="meta mt-3">The four highlighted boxes share <strong>three hidden clumps</strong>: a <em>time window</em>, a <em>stream default</em> guard, and the <em>HTTP-call envelope</em>. None has a home; each is reconstructed at every call site.</p>
+</section>
+
+<!-- Candidate 1 -->
+<section class="card">
+  <div class="flex items-start justify-between gap-4 mb-3">
+    <h2 class="text-xl font-semibold">1 · Promote <code>TimeRange</code> to a real type</h2>
+    <span class="pill badge-strong">Strong</span>
+  </div>
+  <p class="meta mb-1"><strong>Files:</strong> <code>internal/openobserve/{logs,traces,metrics}.go</code>, <code>internal/mcp/tools.go</code></p>
+  <p class="meta mb-3"><strong>Concept (proposed):</strong> <em>TimeRange</em> — a paired (start, end) window with a default constructor. Carries WHERE-clause fragments too.</p>
+
+  <p><strong>Problem.</strong> <code>StartTime</code> / <code>EndTime</code> / <code>Limit</code> travel together through every request struct and default identically in every method
+  (<code>logs.go:38–52</code>, <code>logs.go:153–158</code>, <code>traces.go:36–44</code>, <code>metrics.go:35–43</code>). The <code>timestamp &gt;= / &lt;=</code> WHERE pair is rebuilt verbatim at four sites.
+  The duplication means a change to default-window policy (e.g. <code>"last 1h"</code> → <code>"last 15m"</code>) is a four-file edit. Tests can't pin the default behaviour through a single fakeable surface.</p>
+
+  <p><strong>Solution.</strong> Introduce a <code>TimeRange</code> type with:</p>
+  <ul class="list-disc pl-6 text-sm">
+    <li><code>NowRange(d time.Duration) TimeRange</code> — the policy today lives here, <em>one</em> place.</li>
+    <li><code>Where() []string</code> — emits the two <code>timestamp &gt;=</code> / <code>timestamp &lt;=</code> fragments.</li>
+    <li>Replace three loose fields per request with a single <code>TimeRange</code>, defaulting at the request boundary.</li>
+  </ul>
+
+  <p class="mt-3"><strong>Benefits.</strong> Locality: window policy sits in one place; the SQL builder doesn't need to know what "default" means. Leverage: every method becomes shorter by ~10 lines. The <em>interface is the test surface</em>: fake <code>TimeRange</code> in tests and the SQL builder becomes trivially testable.</p>
+
+  <div class="col-pair mt-4">
+    <div class="pane pane-before">
+      <p class="text-xs uppercase tracking-wide font-semibold text-red-700 mb-2">Before</p>
+<pre>type SearchLogsRequest struct {
+    Stream  string
+    Level   string
+    StartTime time.Time
+    EndTime   time.Time
+    Limit     int
+}
+
+func (c *Client) SearchLogs(ctx, req) ... {
+    if req.StartTime.IsZero() { req.StartTime = time.Now().Add(-1*time.Hour) }
+    if req.EndTime.IsZero()   { req.EndTime   = time.Now() }
+    ...
+    where := []string{
+        fmt.Sprintf("timestamp &gt;= %d", req.StartTime.UnixMicro()),
+        fmt.Sprintf("timestamp &lt;= %d", req.EndTime.UnixMicro()),
+    }</pre>
+    </div>
+    <div class="pane pane-after">
+      <p class="text-xs uppercase tracking-wide font-semibold text-green-700 mb-2">After</p>
+<pre>type TimeRange struct{ Start, End time.Time }
+
+func NowRange(d time.Duration) TimeRange { /* one place */ }
+func (r TimeRange) Where() []string {
+    return []string{
+        fmt.Sprintf("timestamp &gt;= %d", r.Start.UnixMicro()),
+        fmt.Sprintf("timestamp &lt;= %d", r.End.UnixMicro()),
+    }
+}
+
+type SearchLogsRequest struct {
+    Stream string
+    Level  string
+    Range  TimeRange
+    Limit  int
+}
+
+func (c *Client) SearchLogs(ctx, req) ... {
+    where := append(req.Range.Where(), /* filters */)
+    ...</pre>
+    </div>
+  </div>
+</section>
+
+<!-- Candidate 2 -->
+<section class="card">
+  <div class="flex items-start justify-between gap-4 mb-3">
+    <h2 class="text-xl font-semibold">2 · Single normalization point on <code>Client</code></h2>
+    <span class="pill badge-strong">Strong</span>
+  </div>
+  <p class="meta mb-1"><strong>Files:</strong> <code>internal/openobserve/{client,logs,traces,metrics}.go</code></p>
+  <p class="meta mb-3"><strong>Concept (proposed):</strong> <em>StreamKind</em> — typed enum of <code>Log</code>/<code>Metric</code>/<code>Trace</code>, each owning its default stream name.</p>
+
+  <p><strong>Problem.</strong> <code>if req.Stream == "" { req.Stream = "&lt;default&gt;" }</code> recurs <strong>eight times</strong> across three files, defaulting to one of three string literals (<code>"default"</code> / <code>"traces"</code> / <code>"metrics"</code>) that are also duplicated as bare strings. The schema-discovery path in <code>logs.go</code> even has a fourth call-site where the default "default" hides inside a fallback branch.</p>
+
+  <p><strong>Solution.</strong> A <code>StreamKind</code> enum on the request side, with each method on <code>Client</code> resolving it via a single helper <code>defaultStream(StreamKind) string</code> keyed on a config map. The default-stream-per-kind is data, not code.</p>
+
+  <div class="col-pair mt-4">
+    <div class="pane pane-before">
+      <p class="text-xs uppercase tracking-wide font-semibold text-red-700 mb-2">Before</p>
+<pre>// logs.go, traces.go, metrics.go — same shape repeated
+if req.Stream == "" {
+    req.Stream = "default"   // or "traces" / "metrics"
+}
+if req.Limit &lt;= 0 {
+    req.Limit = 100
+}
+if req.Direction == "" {
+    req.Direction = "desc"
+}</pre>
+    </div>
+    <div class="pane pane-after">
+      <p class="text-xs uppercase tracking-wide font-semibold text-green-700 mb-2">After</p>
+<pre>type StreamKind int
+const ( Log StreamKind = iota; Metric; Trace )
+
+type Client struct { ...; defaultStreams map[StreamKind]string }
+
+func (c *Client) SearchLogs(ctx, req) ... {
+    req.Stream = c.resolveStream(Log, req.Stream)
+    req.normalize()
+    ...
+}</pre>
+    </div>
+  </div>
+
+  <p class="mt-3"><strong>Benefits.</strong> Locality: the three default-stream literals live <em>once</em> on the client (or in config), not seven times in three files. Leverage: a future change "metrics now go to <code>app_metrics</code>" is a one-line edit. The interface is the test surface: a fake <code>Client</code> with a fixed default-stream map catches any caller that bypasses normalization.</p>
+</section>
+
+<!-- Candidate 3 -->
+<section class="card">
+  <div class="flex items-start justify-between gap-4 mb-3">
+    <h2 class="text-xl font-semibold">3 · Extract an HTTP seam so the adapter is testable</h2>
+    <span class="pill badge-strong">Strong</span>
+  </div>
+  <p class="meta mb-1"><strong>Files:</strong> <code>internal/openobserve/client.go</code> (entry), tests under <code>internal/openobserve/*_test.go</code></p>
+  <p class="meta mb-3"><strong>Concept (proposed):</strong> <em>Transport</em> — a single-method interface that the <code>Client</code> delegates the actual HTTP call to.</p>
+
+  <p><strong>Problem.</strong> <code>client.go:61–102</code> (<code>do()</code>) holds the marshalling, auth, body-cap, status-classification, JSON decode — all genuinely valuable behaviour. But <code>c.http</code> is a concrete <code>*http.Client</code> (<code>client.go:22, 50, 79</code>) with no interface above it, so the entire layer is <strong>untested</strong>: there are zero <code>*_test.go</code> files in <code>internal/openobserve/</code>. The schema cache is the only piece testable in isolation today, and it's not tested.</p>
+
+  <p><strong>Solution.</strong> Extract a <code>Transport</code> interface (one method: <code>Do(req *http.Request) (*http.Response, error)</code>) and have <code>Client</code> hold a <code>Transport</code>. A test <code>fakeTransport</code> returns canned <code>*http.Response</code>s. Result: every public method (<code>SearchLogs</code>, <code>AggregateLogs</code>, <code>QueryMetrics</code>, <code>SearchTraces</code>) becomes unit-testable with no network. The existing <code>http.Client</code> still implements the interface zero-cost.</p>
+
+  <div class="col-pair mt-4">
+    <div class="pane pane-before">
+      <p class="text-xs uppercase tracking-wide font-semibold text-red-700 mb-2">Before</p>
+<pre>type Client struct {
+    http *http.Client    // concrete; cannot be faked
+    ...
+}
+
+func (c *Client) do(...) {
+    resp, err := c.http.Do(req)   // &lt;-- only place a test could intercept
+    ...
+}</pre>
+    </div>
+    <div class="pane pane-after">
+      <p class="text-xs uppercase tracking-wide font-semibold text-green-700 mb-2">After</p>
+<pre>type Transport interface {
+    Do(*http.Request) (*http.Response, error)
+}
+
+type Client struct {
+    transport Transport   // *http.Client satisfies it
+    ...
+}
+
+func NewClient(cfg *config.Config) *Client { return &Client{transport: &http.Client{Timeout: cfg.Timeout}, ...} }
+
+// in tests:
+type fakeTransport struct{ resp *http.Response; err error }
+func (f *fakeTransport) Do(*http.Request) (*http.Response, error) { return f.resp, f.err }</pre>
+    </div>
+  </div>
+
+  <p class="mt-3"><strong>Benefits.</strong> <strong>One adapter = hypothetical seam, two adapters = real</strong> — the test fake is the second adapter, so this is unambiguously a real seam. <em>Deletion test:</em> deleting the concrete <code>*http.Client</code> field concentrates complexity in <code>Transport</code>, which is the signal we want. Tests at this seam catch SQL-builder regressions without a running OpenObserve.</p>
+</section>
+
+<!-- Candidate 4 -->
+<section class="card">
+  <div class="flex items-start justify-between gap-4 mb-3">
+    <h2 class="text-xl font-semibold">4 · Move SQL building out of the adapter</h2>
+    <span class="pill badge-worth">Worth exploring</span>
+  </div>
+  <p class="meta mb-1"><strong>Files:</strong> <code>internal/openobserve/{logs,traces,metrics}.go</code> → propose moving SQL into a sibling <code>sqlbuilder/</code></p>
+  <p class="meta mb-3"><strong>Concept (proposed):</strong> <em>SQLBuilder</em> — a small package per kind that takes a request and returns a parameterised SQL string + args.</p>
+
+  <p><strong>Problem.</strong> <code>traces.go</code> (120 lines) and <code>metrics.go</code> (110 lines) are mostly <em>request-normalization + string-formatted SQL + envelope construction + a single <code>c.do()</code> call</em>. The actual transport is one line in each. The interface is small but the methods are almost entirely "format a SQL string." This is shallow module territory: <em>interface nearly as complex as the implementation</em>.</p>
+
+  <p><strong>Solution.</strong> A <code>sqlbuilder/</code> package with one file per kind (<code>logs.go</code>, <code>traces.go</code>, <code>metrics.go</code>) that exports <code>Build(req) (string, []any, error)</code>. The adapter's adapter methods become <em>delegate-and-call</em>: build, encode, post, decode. The schema-driven column picker moves with the SQL building — it's not a transport concern.</p>
+
+  <div class="col-pair mt-4">
+    <div class="pane pane-before">
+      <p class="text-xs uppercase tracking-wide font-semibold text-red-700 mb-2">Before</p>
+<pre>// traces.go
+func (c *Client) SearchTraces(ctx, req) ... {
+    // ... 50 lines of normalize + WHERE-build +
+    // ... SQL format + envelope + c.do() ...
+}</pre>
+    </div>
+    <div class="pane pane-after">
+      <p class="text-xs uppercase tracking-wide font-semibold text-green-700 mb-2">After</p>
+<pre>func (c *Client) SearchTraces(ctx, req) ... {
+    sql, args, err := sqlbuilder.Traces.Build(req)
+    if err != nil { return nil, err }
+    var resp SearchTracesResponse
+    return &resp, c.search(ctx, sql, args, &resp)
+}</pre>
+    </div>
+  </div>
+
+  <p class="mt-3"><strong>Benefits.</strong> Locality: SQL dialect knowledge lives in one place per kind, swappable when the underlying store changes. Leverage: each builder is independently testable with no <code>Client</code> needed. The adapter methods become genuinely thin, justifying their existence.</p>
+</section>
+
+<!-- Candidate 5 -->
+<section class="card">
+  <div class="flex items-start justify-between gap-4 mb-3">
+    <h2 class="text-xl font-semibold">5 · Consolidate the <code>_search</code> envelope</h2>
+    <span class="pill badge-worth">Worth exploring</span>
+  </div>
+  <p class="meta mb-1"><strong>Files:</strong> <code>internal/openobserve/client.go</code>, refactor call sites</p>
+  <p class="meta mb-3"><strong>Concept (proposed):</strong> <em>searchQuery</em> — typed struct for the <code>{"query": {...}}</code> envelope.</p>
+
+  <p><strong>Problem.</strong> The OpenObserve search envelope <code>{"query":{"sql":...,"start_time":...,"end_time":...,"from":0,"size":...}}</code> is rebuilt verbatim four times (<code>logs.go:97–105</code>, <code>logs.go:172–180</code>, <code>traces.go:73–81</code>, <code>metrics.go:77–85</code>). Same shape but with <code>map[string]any</code>, no type help, easy to drift.</p>
+
+  <p><strong>Solution.</strong> A typed <code>searchQuery</code> struct (<code>SQL string; StartTime, EndTime int64; From, Size int</code>) and a single <code>c.search(ctx, query, out) error</code> helper that knows how to marshal and POST to <code>/api/{org}/_search</code>. JSON tags render <code>start_time</code> correctly.</p>
+
+  <p class="mt-3"><strong>Benefits.</strong> Locality: the wire shape lives in one place; future envelope changes are a one-file edit. Type-safety replaces map-soup.</p>
+</section>
+
+<!-- Candidate 6 (speculative) -->
+<section class="card">
+  <div class="flex items-start justify-between gap-4 mb-3">
+    <h2 class="text-xl font-semibold">6 · The "default = last 1h" policy is product-shaped</h2>
+    <span class="pill badge-spec">Speculative</span>
+  </div>
+  <p class="meta mb-1"><strong>Files:</strong> config plumbing into <code>internal/config</code></p>
+  <p><strong>Problem.</strong> Hard-coded <code>time.Now().Add(-1*time.Hour)</code> at <code>logs.go:48</code>, <code>traces.go:40</code>, <code>metrics.go:39</code>, <code>logs.go:154</code>. A real "default time range" is a UX/product choice baked into the adapter.</p>
+  <p><strong>Solution.</strong> Add <code>DEFAULT_QUERY_WINDOW</code> to <code>internal/config</code>, use it inside <code>TimeRange.NowRange</code> from candidate 1. <em>Conditional on candidate 1</em> — no point doing this twice.</p>
+  <p><strong>Benefits.</strong> Configurable without code edits; one knob controls all four default windows at once.</p>
+</section>
+
+<!-- Top recommendation -->
+<section class="card" style="background:#f5f5f4;">
+  <h2 class="text-xl font-semibold mb-2">Top recommendation</h2>
+  <p class="mb-2"><strong>Tackle candidates 1, 2, and 3 together as one deepening.</strong> Each individually ranks "Strong"; together they form one coherent deepening of <code>internal/openobserve/</code>:</p>
+  <ul class="list-disc pl-6 text-sm mb-3">
+    <li><strong>Candidate 3 first</strong> — the <code>Transport</code> seam unlocks testing for everything else. Without it, candidates 1, 2, 4, 5 are unverified refactors.</li>
+    <li><strong>Candidate 1 next</strong> — <code>TimeRange</code> removes a high-impact clump and gives a natural home for the "default window" policy (candidate 6).</li>
+    <li><strong>Candidate 2 last</strong> — <code>StreamKind</code> consolidation rides on the new test seam; behaviour is verifiable after the seam exists.</li>
+  </ul>
+  <p class="text-sm">Together they collapse ~80 lines of duplication, make the adapter deep instead of wide, and convert a fully-untested package into one with HTTP-level unit tests. Candidates 4 and 5 become small, almost-mechanical follow-ups once the deep module exists.</p>
+</section>
+
+<footer class="meta mt-10">
+  <p>Vocabulary: <em>module</em>, <em>interface</em>, <em>depth</em>, <em>seam</em>, <em>adapter</em>, <em>leverage</em>, <em>locality</em>. See <code>/codebase-design</code>. No <code>CONTEXT.md</code> or ADRs exist in this repo yet — deepening #1 will introduce terms worth recording.</p>
+</footer>
+
+</div>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose', flowchart: { curve: 'basis' } });
+</script>
+</body>
+</html>

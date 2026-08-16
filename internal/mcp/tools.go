@@ -296,7 +296,7 @@ func (s *Server) handleSearchLogs(ctx context.Context, req mcp.CallToolRequest) 
 		callErr = err
 		return errorResult(err), nil
 	}
-	r.StartTime, r.EndTime = startT, endT
+	r.Range = openobserve.TimeRange{Start: startT, End: endT}
 
 	resp, err := s.client.SearchLogs(ctx, r)
 	if err != nil {
@@ -309,13 +309,13 @@ func (s *Server) handleSearchLogs(ctx context.Context, req mcp.CallToolRequest) 
 func (s *Server) handleGetRecentLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	limit := int(floatArg(args, "limit", 20))
+	now := time.Now()
 	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
-		Limit:     limit,
-		Service:   stringArg(args, "service", ""),
-		Level:     stringArg(args, "level", ""),
-		Stream:    "default",
-		StartTime: time.Now().Add(-1 * time.Hour),
-		EndTime:   time.Now(),
+		Limit:   limit,
+		Service: stringArg(args, "service", ""),
+		Level:   stringArg(args, "level", ""),
+		Stream:  "default",
+		Range:   openobserve.TimeRange{Start: now.Add(-1 * time.Hour), End: now},
 	})
 	if err != nil {
 		return errorResult(err), nil
@@ -332,12 +332,11 @@ func (s *Server) handleSearchErrors(ctx context.Context, req mcp.CallToolRequest
 		return errorResult(err), nil
 	}
 	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
-		Stream:    "default",
-		Service:   stringArg(args, "service", ""),
-		Level:     "ERROR",
-		Limit:     limit,
-		StartTime: startT,
-		EndTime:   endT,
+		Stream:  "default",
+		Service: stringArg(args, "service", ""),
+		Level:   "ERROR",
+		Limit:   limit,
+		Range:   openobserve.TimeRange{Start: startT, End: endT},
 	})
 	if err != nil {
 		return errorResult(err), nil
@@ -365,8 +364,7 @@ func (s *Server) handleQueryMetrics(ctx context.Context, req mcp.CallToolRequest
 		Aggregation: agg,
 		Service:     stringArg(args, "service", ""),
 		GroupBy:     groupBy,
-		StartTime:   startT,
-		EndTime:     endT,
+		Range:       openobserve.TimeRange{Start: startT, End: endT},
 		Limit:       limit,
 	})
 	if err != nil {
@@ -391,8 +389,7 @@ func (s *Server) handleGetMetric(ctx context.Context, req mcp.CallToolRequest) (
 		MetricName:  metric,
 		Aggregation: "avg",
 		Service:     stringArg(args, "service", ""),
-		StartTime:   startT,
-		EndTime:     endT,
+		Range:       openobserve.TimeRange{Start: startT, End: endT},
 		Limit:       limit,
 	})
 	if err != nil {
@@ -416,8 +413,7 @@ func (s *Server) handleSearchTraces(ctx context.Context, req mcp.CallToolRequest
 		Status:    stringArg(args, "status", ""),
 		TraceID:   stringArg(args, "trace_id", ""),
 		Limit:     limit,
-		StartTime: startT,
-		EndTime:   endT,
+		Range:     openobserve.TimeRange{Start: startT, End: endT},
 	}
 	if v, ok := args["min_duration_ms"].(float64); ok {
 		r.MinSpanDur = int(v) * 1000 // ms -> us
@@ -450,11 +446,10 @@ func (s *Server) handleGetServiceErrors(ctx context.Context, req mcp.CallToolReq
 		return errorResult(err), nil
 	}
 	resp, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
-		Stream:    "default",
-		GroupBy:   "service",
-		Where:     []string{"level = 'ERROR'"},
-		StartTime: startT,
-		EndTime:   endT,
+		Stream:  "default",
+		GroupBy: "service",
+		Where:   []string{"level = 'ERROR'"},
+		Range:   openobserve.TimeRange{Start: startT, End: endT},
 	})
 	if err != nil {
 		return errorResult(err), nil
@@ -480,8 +475,7 @@ func (s *Server) handleGetSlowRequests(ctx context.Context, req mcp.CallToolRequ
 		Service:       stringArg(args, "service", ""),
 		MinDurationMS: minDuration,
 		Limit:         limit,
-		StartTime:     startT,
-		EndTime:       endT,
+		Range:         openobserve.TimeRange{Start: startT, End: endT},
 	})
 	if err != nil {
 		return errorResult(err), nil
@@ -498,21 +492,19 @@ func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequ
 	}
 
 	byService, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
-		Stream:    "default",
-		GroupBy:   "service",
-		Where:     []string{"level = 'ERROR'"},
-		StartTime: startT,
-		EndTime:   endT,
+		Stream:  "default",
+		GroupBy: "service",
+		Where:   []string{"level = 'ERROR'"},
+		Range:   openobserve.TimeRange{Start: startT, End: endT},
 	})
 	if err != nil {
 		return errorResult(err), nil
 	}
 	byStatus, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
-		Stream:    "default",
-		GroupBy:   "status",
-		Where:     []string{"level = 'ERROR'"},
-		StartTime: startT,
-		EndTime:   endT,
+		Stream:  "default",
+		GroupBy: "status",
+		Where:   []string{"level = 'ERROR'"},
+		Range:   openobserve.TimeRange{Start: startT, End: endT},
 	})
 	if err != nil {
 		return errorResult(err), nil

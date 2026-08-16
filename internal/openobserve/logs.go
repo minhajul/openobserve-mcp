@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"time"
 )
 
 type LogEntry map[string]any
@@ -18,8 +17,7 @@ type SearchLogsRequest struct {
 	TraceID         string
 	MessageContains string
 	MinDurationMS   int
-	StartTime       time.Time
-	EndTime         time.Time
+	Range           TimeRange
 	Limit           int
 	Direction       string
 }
@@ -32,9 +30,7 @@ type SearchLogsResponse struct {
 }
 
 func (c *Client) SearchLogs(ctx context.Context, req SearchLogsRequest) (*SearchLogsResponse, error) {
-	if req.Stream == "" {
-		req.Stream = "default"
-	}
+	req.Stream = c.resolveStream(KindLog, req.Stream)
 	if req.Limit <= 0 {
 		req.Limit = 100
 	}
@@ -44,17 +40,11 @@ func (c *Client) SearchLogs(ctx context.Context, req SearchLogsRequest) (*Search
 	if req.Direction == "" {
 		req.Direction = "desc"
 	}
-	if req.StartTime.IsZero() {
-		req.StartTime = time.Now().Add(-1 * time.Hour)
-	}
-	if req.EndTime.IsZero() {
-		req.EndTime = time.Now()
+	if req.Range.Start.IsZero() || req.Range.End.IsZero() {
+		req.Range = NowRange(0)
 	}
 
-	where := []string{
-		fmt.Sprintf("timestamp >= %d", req.StartTime.UnixMicro()),
-		fmt.Sprintf("timestamp <= %d", req.EndTime.UnixMicro()),
-	}
+	where := req.Range.Where()
 	if req.Service != "" {
 		where = append(where, fmt.Sprintf("service = '%s'", escape(req.Service)))
 	}
@@ -94,31 +84,16 @@ func (c *Client) SearchLogs(ctx context.Context, req SearchLogsRequest) (*Search
 		req.Limit,
 	)
 
-	body := map[string]any{
-		"query": map[string]any{
-			"sql":        sql,
-			"start_time": req.StartTime.UnixMicro(),
-			"end_time":   req.EndTime.UnixMicro(),
-			"from":       0,
-			"size":       req.Limit,
-		},
-	}
-
-	endpoint := fmt.Sprintf("/api/%s/_search",
-		url.PathEscape(c.cfg.OpenObserveOrg),
-	)
-
+	body := searchBody(sql, req.Range, 0, req.Limit)
 	resp := &SearchLogsResponse{QuerySQL: sql}
-	if err := c.do(ctx, "POST", endpoint, body, resp); err != nil {
+	if err := c.do(ctx, "POST", searchEndpoint(c.cfg.OpenObserveOrg), body, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *Client) IngestLogs(ctx context.Context, stream string, entries []LogEntry) error {
-	if stream == "" {
-		stream = "default"
-	}
+	stream = c.resolveStream(KindLog, stream)
 	if len(entries) == 0 {
 		return nil
 	}
@@ -130,11 +105,10 @@ func (c *Client) IngestLogs(ctx context.Context, stream string, entries []LogEnt
 }
 
 type AggregateLogsRequest struct {
-	Stream    string
-	GroupBy   string
-	Where     []string
-	StartTime time.Time
-	EndTime   time.Time
+	Stream  string
+	GroupBy string
+	Where   []string
+	Range   TimeRange
 }
 
 type AggregateLogsResponse struct {
@@ -144,24 +118,15 @@ type AggregateLogsResponse struct {
 }
 
 func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*AggregateLogsResponse, error) {
-	if req.Stream == "" {
-		req.Stream = "default"
-	}
+	req.Stream = c.resolveStream(KindLog, req.Stream)
 	if req.GroupBy == "" {
 		return nil, fmt.Errorf("AggregateLogs: GroupBy is required")
 	}
-	if req.StartTime.IsZero() {
-		req.StartTime = time.Now().Add(-1 * time.Hour)
-	}
-	if req.EndTime.IsZero() {
-		req.EndTime = time.Now()
+	if req.Range.Start.IsZero() || req.Range.End.IsZero() {
+		req.Range = NowRange(0)
 	}
 
-	where := []string{
-		fmt.Sprintf("timestamp >= %d", req.StartTime.UnixMicro()),
-		fmt.Sprintf("timestamp <= %d", req.EndTime.UnixMicro()),
-	}
-	where = append(where, req.Where...)
+	where := append(req.Range.Where(), req.Where...)
 
 	col := escape(req.GroupBy)
 	sql := fmt.Sprintf(
@@ -169,21 +134,11 @@ func (c *Client) AggregateLogs(ctx context.Context, req AggregateLogsRequest) (*
 		col, req.Stream, strings.Join(where, " AND "), col,
 	)
 
-	body := map[string]any{
-		"query": map[string]any{
-			"sql":        sql,
-			"start_time": req.StartTime.UnixMicro(),
-			"end_time":   req.EndTime.UnixMicro(),
-			"from":       0,
-			"size":       1000,
-		},
-	}
-	endpoint := fmt.Sprintf("/api/%s/_search", url.PathEscape(c.cfg.OpenObserveOrg))
-
+	body := searchBody(sql, req.Range, 0, 1000)
 	var raw struct {
 		Hits []map[string]any `json:"hits"`
 	}
-	if err := c.do(ctx, "POST", endpoint, body, &raw); err != nil {
+	if err := c.do(ctx, "POST", searchEndpoint(c.cfg.OpenObserveOrg), body, &raw); err != nil {
 		return nil, err
 	}
 	out := &AggregateLogsResponse{

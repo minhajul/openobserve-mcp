@@ -17,9 +17,35 @@ import (
 
 const schemaTTL = 5 * time.Minute
 
+const defaultQueryWindow = 1 * time.Hour
+
+type TimeRange struct {
+	Start time.Time
+	End   time.Time
+}
+
+func NowRange(d time.Duration) TimeRange {
+	now := time.Now()
+	if d <= 0 {
+		d = defaultQueryWindow
+	}
+	return TimeRange{Start: now.Add(-d), End: now}
+}
+
+func (r TimeRange) Where() []string {
+	return []string{
+		fmt.Sprintf("timestamp >= %d", r.Start.UnixMicro()),
+		fmt.Sprintf("timestamp <= %d", r.End.UnixMicro()),
+	}
+}
+
+type Transport interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
 type Client struct {
 	cfg     *config.Config
-	http    *http.Client
+	http    Transport
 	baseURL string
 
 	schemaMu    sync.RWMutex
@@ -32,11 +58,16 @@ type schemaEntry struct {
 }
 
 func NewClient(cfg *config.Config) *Client {
+	return NewClientWithTransport(cfg, &http.Client{Timeout: cfg.OpenObserveTimeout})
+}
+
+func NewClientWithTransport(cfg *config.Config, t Transport) *Client {
+	if t == nil {
+		t = &http.Client{Timeout: cfg.OpenObserveTimeout}
+	}
 	return &Client{
-		cfg: cfg,
-		http: &http.Client{
-			Timeout: cfg.OpenObserveTimeout,
-		},
+		cfg:         cfg,
+		http:        t,
 		baseURL:     cfg.OpenObserveURL,
 		schemaCache: make(map[string]schemaEntry),
 	}
@@ -123,6 +154,53 @@ func truncate(s string, n int) string {
 
 func escape(v string) string {
 	return strings.ReplaceAll(v, `'`, `''`)
+}
+
+type StreamKind int
+
+const (
+	KindLog StreamKind = iota
+	KindMetric
+	KindTrace
+)
+
+func (c *Client) resolveStream(kind StreamKind, given string) string {
+	if given != "" {
+		return given
+	}
+	switch kind {
+	case KindLog:
+		return "default"
+	case KindMetric:
+		return "metrics"
+	case KindTrace:
+		return "traces"
+	}
+	return ""
+}
+
+func searchEndpoint(org string) string {
+	return fmt.Sprintf("/api/%s/_search", url.PathEscape(org))
+}
+
+type searchQuery struct {
+	SQL       string `json:"sql"`
+	StartTime int64  `json:"start_time"`
+	EndTime   int64  `json:"end_time"`
+	From      int    `json:"from"`
+	Size      int    `json:"size"`
+}
+
+func searchBody(sql string, r TimeRange, from, size int) map[string]any {
+	return map[string]any{
+		"query": searchQuery{
+			SQL:       sql,
+			StartTime: r.Start.UnixMicro(),
+			EndTime:   r.End.UnixMicro(),
+			From:      from,
+			Size:      size,
+		},
+	}
 }
 
 func (c *Client) streamSchema(ctx context.Context, stream string) (map[string]bool, error) {
