@@ -5,11 +5,9 @@ SEED_BIN         := bin/seed
 OO_IMAGE         := public.ecr.aws/zinclabs/openobserve:latest
 OO_VOLUME        := openobserve-data
 
-# Load .env if present so `make seed` picks up OPENOBSERVE_USERNAME etc.
-ifneq (,$(wildcard ./.env))
-include .env
-export
-endif
+# Load .env (if present) via the shell, not Make's `include`: Make treats `#`
+# as a comment, which would truncate values like the default password.
+LOAD_ENV         := if [ -f .env ]; then set -a; . ./.env; set +a; fi;
 
 .PHONY: help build up down logs ps seed mcp fmt vet tidy clean
 
@@ -41,10 +39,10 @@ logs: ## Tail OpenObserve container logs
 	$(DC) logs -f openobserve
 
 seed: build ## Load deterministic sample logs/metrics/traces
-	$(SEED_BIN)
+	@$(LOAD_ENV) $(SEED_BIN)
 
 mcp: build ## Run the MCP server (stdio) in foreground
-	$(SERVER_BIN)
+	@$(LOAD_ENV) $(SERVER_BIN)
 
 fmt: ## Run gofmt
 	gofmt -w .
