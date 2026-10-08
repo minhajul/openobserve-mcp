@@ -8,25 +8,25 @@ import (
 
 type MetricsResponse struct {
 	Hits     []map[string]any `json:"hits"`
-	Total    int64            `json:"total"`
+	Count    int              `json:"count"`
 	TookMs   int              `json:"took_ms"`
-	QuerySQL string           `json:"query_sql"`
+	QuerySQL string           `json:"-"`
 }
 
 type QueryMetricsRequest = sqlbuilder.QueryMetricsRequest
 
 func (c *Client) QueryMetrics(ctx context.Context, req QueryMetricsRequest) (*MetricsResponse, error) {
 	req.Stream = c.resolveStream(KindMetric, req.Stream)
+	req.Range = req.Range.Normalize()
 	sql, _, err := sqlbuilder.MetricsBuild(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	body := searchBody(sql, req.Range, 0, req.Limit)
-	resp := &MetricsResponse{QuerySQL: sql}
-	if err := c.do(ctx, "POST", c.searchEndpoint(), body, resp); err != nil {
+	res, err := c.search(ctx, sql, req.Range)
+	if err != nil {
 		return nil, err
 	}
-	return resp, nil
+	return &MetricsResponse{Hits: res.Hits, Count: len(res.Hits), TookMs: res.Took, QuerySQL: sql}, nil
 }
 
 func (c *Client) IngestMetrics(ctx context.Context, stream string, entries []map[string]any) error {

@@ -6,9 +6,22 @@ import (
 	"strings"
 )
 
-var logOptionalCols = []string{"host", "method", "path", "status", "duration_ms", "trace_id", "error", "environment"}
+var logOptionalCols = []string{
+	"host", "method", "path", "status", "duration_ms",
+	"trace_id", "span_id", "request_id", "user_id", "error", "environment",
+}
 
-var logCoreCols = []string{"timestamp", "level", "service", "message"}
+var logCoreCols = []string{TimestampCol, "level", "service", "message"}
+
+var validLevels = map[string]bool{
+	"TRACE": true, "DEBUG": true, "INFO": true, "WARN": true, "ERROR": true, "FATAL": true,
+}
+
+// Sort orders accepted by SearchLogsRequest.OrderBy.
+const (
+	OrderByTimestamp = "timestamp"
+	OrderByDuration  = "duration_ms"
+)
 
 type SearchLogsRequest struct {
 	Stream          string
@@ -20,6 +33,7 @@ type SearchLogsRequest struct {
 	MinDurationMS   int
 	Range           TimeRange
 	Limit           int
+	OrderBy         string
 	Direction       string
 }
 
@@ -27,30 +41,41 @@ func LogsBuild(ctx context.Context, req SearchLogsRequest, res ColumnResolver) (
 	if res == nil {
 		res = FixedColumns(logCoreCols...)
 	}
-	if req.Direction == "" {
-		req.Direction = "desc"
-	}
-	if req.Limit <= 0 {
-		req.Limit = 100
-	}
-	if req.Limit > 1000 {
-		req.Limit = 1000
-	}
-	if req.Range.Start.IsZero() || req.Range.End.IsZero() {
-		req.Range = NowRange(0)
-	}
-
-	cols, err := pickLogColumns(ctx, res, req.Stream)
+	from, err := stream(req.Stream)
 	if err != nil {
 		return "", nil, err
 	}
+	dir := strings.ToUpper(req.Direction)
+	switch dir {
+	case "":
+		dir = "DESC"
+	case "ASC", "DESC":
+	default:
+		return "", nil, fmt.Errorf("invalid direction %q (want asc or desc)", req.Direction)
+	}
+	orderCol := TimestampCol
+	switch req.OrderBy {
+	case "", OrderByTimestamp:
+	case OrderByDuration:
+		orderCol = "duration_ms"
+	default:
+		return "", nil, fmt.Errorf("invalid order_by %q", req.OrderBy)
+	}
+	limit := clampLimit(req.Limit, 100)
+	rng := req.Range.Normalize()
 
-	where := req.Range.Where()
+	cols := pickLogColumns(ctx, res, req.Stream)
+
+	where := rng.Where()
 	if req.Service != "" {
 		where = append(where, fmt.Sprintf("service = '%s'", escape(req.Service)))
 	}
 	if req.Level != "" {
-		where = append(where, fmt.Sprintf("level = '%s'", escape(strings.ToUpper(req.Level))))
+		lvl := strings.ToUpper(req.Level)
+		if !validLevels[lvl] {
+			return "", nil, fmt.Errorf("invalid level %q (want one of TRACE, DEBUG, INFO, WARN, ERROR, FATAL)", req.Level)
+		}
+		where = append(where, fmt.Sprintf("level = '%s'", lvl))
 	}
 	if req.Status != "" {
 		where = append(where, fmt.Sprintf("status = '%s'", escape(req.Status)))
@@ -66,53 +91,60 @@ func LogsBuild(ctx context.Context, req SearchLogsRequest, res ColumnResolver) (
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT %s FROM %s WHERE %s ORDER BY timestamp %s LIMIT %d",
+		"SELECT %s FROM %s WHERE %s ORDER BY %s %s LIMIT %d",
 		strings.Join(cols, ", "),
-		req.Stream,
+		from,
 		strings.Join(where, " AND "),
-		strings.ToLower(req.Direction),
-		req.Limit,
+		orderCol,
+		dir,
+		limit,
 	)
 	return sql, nil, nil
 }
 
-func pickLogColumns(ctx context.Context, res ColumnResolver, stream string) ([]string, error) {
+// pickLogColumns selects the core columns plus whichever optional columns the
+// stream's schema has. If the schema can't be resolved it degrades to the core set.
+func pickLogColumns(ctx context.Context, res ColumnResolver, stream string) []string {
+	out := append([]string(nil), logCoreCols...)
 	resolved, err := res.ResolveColumns(ctx, stream)
 	if err != nil {
-		return []string{"timestamp"}, nil
+		return out
 	}
 	have := make(map[string]bool, len(resolved))
 	for _, c := range resolved {
 		have[c] = true
 	}
-	out := append([]string(nil), logCoreCols...)
 	for _, c := range logOptionalCols {
 		if have[c] {
 			out = append(out, c)
 		}
 	}
-	return out, nil
+	return out
 }
 
 type AggregateLogsRequest struct {
 	Stream  string
 	GroupBy string
-	Where   []string
+	Where   []string // trusted, server-built predicates only
 	Range   TimeRange
+	Limit   int
 }
 
 func AggregateLogsBuild(req AggregateLogsRequest) (string, []any, error) {
 	if req.GroupBy == "" {
 		return "", nil, fmt.Errorf("AggregateLogs: GroupBy is required")
 	}
-	if req.Range.Start.IsZero() || req.Range.End.IsZero() {
-		req.Range = NowRange(0)
+	if !ValidIdent(req.GroupBy) {
+		return "", nil, fmt.Errorf("AggregateLogs: invalid GroupBy %q", req.GroupBy)
 	}
-	where := append(req.Range.Where(), req.Where...)
-	col := escape(req.GroupBy)
+	from, err := stream(req.Stream)
+	if err != nil {
+		return "", nil, err
+	}
+	where := append(req.Range.Normalize().Where(), req.Where...)
 	sql := fmt.Sprintf(
-		"SELECT %s AS g, count(*) AS c FROM %s WHERE %s GROUP BY %s",
-		col, req.Stream, strings.Join(where, " AND "), col,
+		"SELECT %s AS g, count(*) AS c FROM %s WHERE %s GROUP BY %s ORDER BY c DESC LIMIT %d",
+		req.GroupBy, from, strings.Join(where, " AND "), req.GroupBy, clampLimit(req.Limit, maxLimit),
 	)
 	return sql, nil, nil
 }

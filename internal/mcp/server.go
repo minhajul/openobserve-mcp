@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,7 +36,8 @@ func New(client *openobserve.Client, opts Options) *Server {
 		opts.Version = "0.1.0"
 	}
 	if opts.Logger == nil {
-		opts.Logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		// stdout carries the MCP stdio protocol; logs must never go there.
+		opts.Logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
 
 	s := &Server{
@@ -99,64 +101,80 @@ func errorResult(err error) *mcp.CallToolResult {
 	return mcp.NewToolResultError(err.Error())
 }
 
+// parseDuration accepts Go durations ("90m", "1h30m"), a day suffix ("7d"),
+// or a bare integer meaning minutes ("30").
 func parseDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, nil
 	}
-	if d, err := time.ParseDuration(s); err == nil {
-		return d, nil
+	var d time.Duration
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.Atoi(days)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q", s)
+		}
+		d = time.Duration(n) * 24 * time.Hour
+	} else if n, err := strconv.Atoi(s); err == nil {
+		d = time.Duration(n) * time.Minute
+	} else if d, err = time.ParseDuration(s); err != nil {
+		return 0, fmt.Errorf("invalid duration %q (use e.g. 15m, 1h, 7d)", s)
 	}
-	var mins int
-	if _, err := fmt.Sscanf(s, "%d", &mins); err == nil {
-		return time.Duration(mins) * time.Minute, nil
+	if d <= 0 {
+		return 0, fmt.Errorf("duration must be positive, got %q", s)
 	}
-	return 0, fmt.Errorf("invalid duration %q", s)
+	return d, nil
 }
 
 func resolveTimeWindow(start, end, since string) (time.Time, time.Time, error) {
 	now := time.Now()
+	endT := now
 	if end != "" {
 		t, err := time.Parse(time.RFC3339, end)
 		if err != nil {
 			return time.Time{}, time.Time{}, fmt.Errorf("invalid end_time: %w", err)
 		}
-		if start != "" {
-			s, err := time.Parse(time.RFC3339, start)
-			if err != nil {
-				return time.Time{}, time.Time{}, fmt.Errorf("invalid start_time: %w", err)
-			}
-			return s, t, nil
-		}
-		return t.Add(-time.Hour), t, nil
+		endT = t
 	}
-	if start != "" {
-		s, err := time.Parse(time.RFC3339, start)
+	startT := endT.Add(-time.Hour)
+	switch {
+	case start != "":
+		t, err := time.Parse(time.RFC3339, start)
 		if err != nil {
 			return time.Time{}, time.Time{}, fmt.Errorf("invalid start_time: %w", err)
 		}
-		return s, now, nil
-	}
-	if since != "" {
+		startT = t
+	case since != "" && end == "":
 		d, err := parseDuration(since)
 		if err != nil {
 			return time.Time{}, time.Time{}, err
 		}
-		return now.Add(-d), now, nil
+		if d > 0 {
+			startT = endT.Add(-d)
+		}
 	}
-	return now.Add(-1 * time.Hour), now, nil
+	if !startT.Before(endT) {
+		return time.Time{}, time.Time{}, fmt.Errorf("start_time must be before end_time")
+	}
+	return startT, endT, nil
 }
 
-func windowFromArgs(args map[string]any) (openobserve.TimeRange, error) {
+// windowFromArgs resolves start_time/end_time/since, using defaultSince when
+// none are given.
+func windowFromArgs(args map[string]any, defaultSince string) (openobserve.TimeRange, error) {
+	since := stringArg(args, "since", "")
+	if since == "" {
+		since = defaultSince
+	}
 	startT, endT, err := resolveTimeWindow(
 		stringArg(args, "start_time", ""),
 		stringArg(args, "end_time", ""),
-		stringArg(args, "since", "1h"),
+		since,
 	)
 	if err != nil {
 		return openobserve.TimeRange{}, err
 	}
-	return openobserve.TimeRange{Start: startT, End: endT}, nil
+	return openobserve.TimeRange{Start: startT.UTC(), End: endT.UTC()}, nil
 }
 
 func stringArg(args map[string]any, key, def string) string {

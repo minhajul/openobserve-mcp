@@ -67,21 +67,29 @@ func jsonResp(t *testing.T, v any) *http.Response {
 	}
 }
 
-func schemaResp(t *testing.T, streamName string) *http.Response {
+func schemaResp(t *testing.T, cols ...string) *http.Response {
 	t.Helper()
-	return jsonResp(t, map[string]any{
-		"list": []map[string]any{
-			{
-				"name": streamName,
-				"schema": []map[string]any{
-					{"name": "timestamp"},
-					{"name": "level"},
-					{"name": "service"},
-					{"name": "message"},
-				},
-			},
-		},
-	})
+	if len(cols) == 0 {
+		cols = []string{"_timestamp", "level", "service", "message"}
+	}
+	fields := make([]map[string]any, len(cols))
+	for i, c := range cols {
+		fields[i] = map[string]any{"name": c}
+	}
+	return jsonResp(t, map[string]any{"schema": fields})
+}
+
+func lastSQL(t *testing.T, ft *fakeTransport) string {
+	t.Helper()
+	var body struct {
+		Query struct {
+			SQL string `json:"sql"`
+		} `json:"query"`
+	}
+	if err := json.Unmarshal(ft.gotBody, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return body.Query.SQL
 }
 
 func TestResolveStreamDefaults(t *testing.T) {
@@ -107,7 +115,7 @@ func TestResolveStreamDefaults(t *testing.T) {
 
 func TestSearchLogsDefaultsStreamAndRange(t *testing.T) {
 	ft := &fakeTransport{queue: []*http.Response{
-		schemaResp(t, "default"),
+		schemaResp(t),
 		jsonResp(t, map[string]any{"hits": []any{}}),
 	}}
 	c := newTestClient(t, ft)
@@ -128,30 +136,16 @@ func TestSearchLogsDefaultsStreamAndRange(t *testing.T) {
 	if err := json.Unmarshal(ft.gotBody, &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if !strings.HasPrefix(body.Query.SQL, "SELECT timestamp, level, service, message FROM default WHERE ") {
+	if !strings.HasPrefix(body.Query.SQL, `SELECT _timestamp, level, service, message FROM "default" WHERE `) {
 		t.Errorf("SQL prefix unexpected: %q", body.Query.SQL)
 	}
-	if !strings.Contains(body.Query.SQL, "timestamp >= ") {
+	if !strings.Contains(body.Query.SQL, "_timestamp >= ") {
 		t.Errorf("SQL missing timestamp >= clause: %q", body.Query.SQL)
 	}
 }
 
 func TestSearchLogsSchemaDrivenColumns(t *testing.T) {
-	streamsResp := jsonResp(t, map[string]any{
-		"list": []map[string]any{
-			{
-				"name": "default",
-				"schema": []map[string]any{
-					{"name": "timestamp"},
-					{"name": "level"},
-					{"name": "service"},
-					{"name": "message"},
-					{"name": "status"},
-					{"name": "duration_ms"},
-				},
-			},
-		},
-	})
+	streamsResp := schemaResp(t, "_timestamp", "level", "service", "message", "status", "duration_ms")
 	empty := jsonResp(t, map[string]any{"hits": []any{}})
 	empty2 := jsonResp(t, map[string]any{"hits": []any{}})
 	ft := &fakeTransport{queue: []*http.Response{streamsResp, empty, empty2}}
@@ -196,8 +190,8 @@ func TestHealthy(t *testing.T) {
 	if err := c.Healthy(context.Background()); err != nil {
 		t.Fatalf("Healthy: %v", err)
 	}
-	if !strings.HasSuffix(ft.gotReq.URL.Path, "/health") {
-		t.Errorf("Healthy path = %q, want suffix /health", ft.gotReq.URL.Path)
+	if !strings.HasSuffix(ft.gotReq.URL.Path, "/healthz") {
+		t.Errorf("Healthy path = %q, want suffix /healthz", ft.gotReq.URL.Path)
 	}
 }
 
@@ -217,16 +211,16 @@ func TestNewClientDefaultsTransport(t *testing.T) {
 
 func TestSearchLogsSetsRequiredHeaders(t *testing.T) {
 	ft := &fakeTransport{queue: []*http.Response{
-		schemaResp(t, "default"),
-		jsonResp(t, map[string]any{"hits": []any{}, "total": 7, "took_ms": 3}),
+		schemaResp(t),
+		jsonResp(t, map[string]any{"hits": []any{map[string]any{"level": "INFO"}}, "total": 1, "took": 3}),
 	}}
 	c := newTestClient(t, ft)
 	resp, err := c.SearchLogs(context.Background(), SearchLogsRequest{Stream: "default"})
 	if err != nil {
 		t.Fatalf("SearchLogs: %v", err)
 	}
-	if resp.Total != 7 {
-		t.Errorf("resp.Total = %d, want 7", resp.Total)
+	if resp.Count != 1 || resp.TookMs != 3 {
+		t.Errorf("Count, TookMs = %d, %d; want 1, 3", resp.Count, resp.TookMs)
 	}
 	if resp.QuerySQL == "" {
 		t.Error("QuerySQL should be populated")
@@ -264,11 +258,9 @@ func TestAggregateLogsRoundTrip(t *testing.T) {
 	if resp.Total != 15 {
 		t.Errorf("Total = %d, want 15", resp.Total)
 	}
-	if got := resp.Groups["api"]; got != 12 {
-		t.Errorf(`Groups["api"] = %d, want 12`, got)
-	}
-	if got := resp.Groups["checkout"]; got != 3 {
-		t.Errorf(`Groups["checkout"] = %d, want 3`, got)
+	want := []AggregateGroup{{Key: "api", Count: 12}, {Key: "checkout", Count: 3}}
+	if len(resp.Groups) != 2 || resp.Groups[0] != want[0] || resp.Groups[1] != want[1] {
+		t.Errorf("Groups = %v, want %v", resp.Groups, want)
 	}
 }
 
@@ -307,8 +299,8 @@ func TestSearchTracesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchTraces: %v", err)
 	}
-	if resp.Total != 1 {
-		t.Errorf("Total = %d, want 1", resp.Total)
+	if resp.Count != 1 {
+		t.Errorf("Count = %d, want 1", resp.Count)
 	}
 	if len(resp.Hits) != 1 {
 		t.Errorf("Hits length = %d, want 1", len(resp.Hits))
@@ -333,8 +325,8 @@ func TestQueryMetricsRoundTrip(t *testing.T) {
 	if resp.QuerySQL == "" {
 		t.Error("QuerySQL should be populated")
 	}
-	if resp.Total != 1 {
-		t.Errorf("Total = %d, want 1", resp.Total)
+	if resp.Count != 1 {
+		t.Errorf("Count = %d, want 1", resp.Count)
 	}
 }
 
@@ -350,11 +342,7 @@ func TestHealthyNon2xxReturnsError(t *testing.T) {
 
 func TestStreamSchemaCacheHitAvoidsSecondCall(t *testing.T) {
 	ft := &fakeTransport{queue: []*http.Response{
-		jsonResp(t, map[string]any{
-			"list": []map[string]any{
-				{"name": "default", "schema": []map[string]any{{"name": "timestamp"}}},
-			},
-		}),
+		schemaResp(t),
 		jsonResp(t, map[string]any{"hits": []any{}}),
 		jsonResp(t, map[string]any{"hits": []any{}}),
 	}}
@@ -371,17 +359,79 @@ func TestStreamSchemaCacheHitAvoidsSecondCall(t *testing.T) {
 	}
 }
 
-func TestStreamSchemaNotFoundFallsBackToTimestamp(t *testing.T) {
+func TestStreamSchemaNotFoundFallsBackToCoreColumns(t *testing.T) {
 	ft := &fakeTransport{queue: []*http.Response{
-		jsonResp(t, map[string]any{"list": []map[string]any{}}),
+		{StatusCode: 404, Body: io.NopCloser(strings.NewReader(`{"code":404}`))},
 		jsonResp(t, map[string]any{"hits": []any{}}),
 	}}
 	c := newTestClient(t, ft)
 	resp, err := c.SearchLogs(context.Background(), SearchLogsRequest{Stream: "missing"})
 	if err != nil {
-		t.Fatalf("SearchLogs with missing stream should fall back to timestamp-only query, got error: %v", err)
+		t.Fatalf("SearchLogs with missing schema should degrade, got error: %v", err)
 	}
-	if !strings.Contains(resp.QuerySQL, "SELECT timestamp FROM missing") {
-		t.Errorf("expected fallback SQL, got %q", resp.QuerySQL)
+	if !strings.Contains(resp.QuerySQL, `SELECT _timestamp, level, service, message FROM "missing"`) {
+		t.Errorf("expected core-column fallback SQL, got %q", resp.QuerySQL)
+	}
+}
+
+func TestSchemaLookupUsesPerStreamEndpoint(t *testing.T) {
+	ft := &fakeTransport{queue: []*http.Response{schemaResp(t)}}
+	c := newTestClient(t, ft)
+	if _, err := c.ResolveColumns(context.Background(), "default"); err != nil {
+		t.Fatalf("ResolveColumns: %v", err)
+	}
+	if got := ft.gotReq.URL.Path; got != "/api/default/streams/default/schema" {
+		t.Errorf("schema path = %q", got)
+	}
+}
+
+func TestSearchHumanizesTimestamps(t *testing.T) {
+	ft := &fakeTransport{queue: []*http.Response{
+		jsonResp(t, map[string]any{"hits": []map[string]any{{"_timestamp": 1_700_000_000_000_000, "trace_id": "abc"}}}),
+	}}
+	c := newTestClient(t, ft)
+	resp, err := c.SearchTraces(context.Background(), SearchTracesRequest{TraceID: "abc"})
+	if err != nil {
+		t.Fatalf("SearchTraces: %v", err)
+	}
+	h := resp.Hits[0]
+	if _, ok := h["_timestamp"]; ok {
+		t.Error("_timestamp should be removed from hits")
+	}
+	if got := h["timestamp"]; got != "2023-11-14T22:13:20Z" {
+		t.Errorf("timestamp = %v, want RFC3339", got)
+	}
+}
+
+func TestSearchBodyUsesNormalizedRange(t *testing.T) {
+	ft := &fakeTransport{queue: []*http.Response{jsonResp(t, map[string]any{"hits": []any{}})}}
+	c := newTestClient(t, ft)
+	if _, err := c.GetTrace(context.Background(), "traces", "abc", TimeRange{}); err != nil {
+		t.Fatalf("GetTrace: %v", err)
+	}
+	var body struct {
+		Query struct {
+			StartTime int64 `json:"start_time"`
+			EndTime   int64 `json:"end_time"`
+		} `json:"query"`
+	}
+	if err := json.Unmarshal(ft.gotBody, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Query.StartTime <= 0 || body.Query.EndTime-body.Query.StartTime != traceLookupWindow.Microseconds() {
+		t.Errorf("upstream window = [%d, %d], want a 7d window ending now", body.Query.StartTime, body.Query.EndTime)
+	}
+	if sql := lastSQL(t, ft); !strings.Contains(sql, "trace_id = 'abc'") {
+		t.Errorf("SQL = %q", sql)
+	}
+}
+
+func TestQuerySQLNotSerialized(t *testing.T) {
+	b, err := json.Marshal(&SearchLogsResponse{QuerySQL: "SELECT 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "SELECT") {
+		t.Errorf("SQL leaked into client JSON: %s", b)
 	}
 }

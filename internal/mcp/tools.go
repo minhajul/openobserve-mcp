@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -12,22 +13,84 @@ import (
 	"github.com/puku/openobserve-mcp/internal/openobserve"
 )
 
+// Logical data sets. These names stay server-side; clients never pass them.
+const (
+	logsStream    = "default"
+	metricsStream = "metrics"
+	tracesStream  = "traces"
+)
+
 func (s *Server) registerTools(srv *server.MCPServer) {
-	srv.AddTool(s.searchLogsTool(), s.handleSearchLogs)
-	srv.AddTool(s.getRecentLogsTool(), s.handleGetRecentLogs)
-	srv.AddTool(s.searchErrorsTool(), s.handleSearchErrors)
-	srv.AddTool(s.queryMetricsTool(), s.handleQueryMetrics)
-	srv.AddTool(s.getMetricTool(), s.handleGetMetric)
-	srv.AddTool(s.searchTracesTool(), s.handleSearchTraces)
-	srv.AddTool(s.getTraceTool(), s.handleGetTrace)
-	srv.AddTool(s.getServiceErrorsTool(), s.handleGetServiceErrors)
-	srv.AddTool(s.getSlowRequestsTool(), s.handleGetSlowRequests)
-	srv.AddTool(s.getErrorSummaryTool(), s.handleGetErrorSummary)
+	srv.AddTool(s.searchLogsTool(), s.handle("search_logs", s.searchLogs))
+	srv.AddTool(s.getRecentLogsTool(), s.handle("get_recent_logs", s.getRecentLogs))
+	srv.AddTool(s.searchErrorsTool(), s.handle("search_errors", s.searchErrors))
+	srv.AddTool(s.queryMetricsTool(), s.handle("query_metrics", s.queryMetrics))
+	srv.AddTool(s.getMetricTool(), s.handle("get_metric", s.getMetric))
+	srv.AddTool(s.listMetricsTool(), s.handle("list_metrics", s.listMetrics))
+	srv.AddTool(s.listServicesTool(), s.handle("list_services", s.listServices))
+	srv.AddTool(s.searchTracesTool(), s.handle("search_traces", s.searchTraces))
+	srv.AddTool(s.getTraceTool(), s.handle("get_trace", s.getTrace))
+	srv.AddTool(s.getServiceErrorsTool(), s.handle("get_service_errors", s.getServiceErrors))
+	srv.AddTool(s.getSlowRequestsTool(), s.handle("get_slow_requests", s.getSlowRequests))
+	srv.AddTool(s.getErrorSummaryTool(), s.handle("get_error_summary", s.getErrorSummary))
 }
 
+// toolFunc does a tool's work. It returns the JSON-able result plus the SQL it
+// ran (for debug logging only; SQL is never returned to the client).
+type toolFunc func(ctx context.Context, args map[string]any) (result any, sql []string, err error)
+
+func (s *Server) handle(name string, fn toolFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		start := time.Now()
+		result, sql, err := fn(ctx, req.GetArguments())
+		for _, q := range sql {
+			s.logger.Debug("tool query", slog.String("tool", name), slog.String("sql", q))
+		}
+		s.logToolCall(name, start, err)
+		if err != nil {
+			return errorResult(err), nil
+		}
+		return jsonResult(result)
+	}
+}
+
+// windowOptions are the time-window parameters shared by every windowed tool.
+func windowOptions(defaultSince string) []mcp.ToolOption {
+	return []mcp.ToolOption{
+		mcp.WithString("since",
+			mcp.Description(fmt.Sprintf("Time window relative to now (e.g. '15m', '1h', '24h', '7d'). Default: '%s'.", defaultSince)),
+		),
+		mcp.WithString("start_time",
+			mcp.Description("RFC3339 start time. Overrides 'since' if provided."),
+		),
+		mcp.WithString("end_time",
+			mcp.Description("RFC3339 end time. Defaults to now."),
+		),
+	}
+}
+
+func newTool(name, desc string, opts ...[]mcp.ToolOption) mcp.Tool {
+	all := []mcp.ToolOption{mcp.WithDescription(desc)}
+	for _, o := range opts {
+		all = append(all, o...)
+	}
+	return mcp.NewTool(name, all...)
+}
+
+func limitOption(def, max int) mcp.ToolOption {
+	return mcp.WithNumber("limit",
+		mcp.Description(fmt.Sprintf("Maximum number of results. Default %d, max %d.", def, max)),
+		mcp.Min(1), mcp.Max(float64(max)), mcp.DefaultNumber(float64(def)),
+	)
+}
+
+var levelOption = mcp.WithString("level",
+	mcp.Description("Filter by log level. Optional."),
+	mcp.Enum("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"),
+)
+
 func (s *Server) searchLogsTool() mcp.Tool {
-	return mcp.NewTool("search_logs",
-		mcp.WithDescription(`Search application logs in OpenObserve using structured filters.
+	return newTool("search_logs", `Search application logs using structured filters.
 
 Use this tool when the user asks about:
 - recent application logs
@@ -38,526 +101,414 @@ Use this tool when the user asks about:
 - logs containing a particular message
 - slow requests
 
-Parameters are returned as a JSON array of matching log entries.`),
-		mcp.WithString("service",
-			mcp.Description("Filter by service name (e.g. 'payment', 'checkout', 'api'). Optional."),
-		),
-		mcp.WithString("level",
-			mcp.Description("Filter by log level. One of: TRACE, DEBUG, INFO, WARN, ERROR, FATAL. Optional."),
-		),
-		mcp.WithString("status",
-			mcp.Description("Filter by HTTP status code (e.g. '500', '404'). Optional."),
-		),
-		mcp.WithString("trace_id",
-			mcp.Description("Filter by trace ID. Optional."),
-		),
-		mcp.WithString("message_contains",
-			mcp.Description("Case-insensitive substring match against the message field. Optional."),
-		),
-		mcp.WithNumber("min_duration_ms",
-			mcp.Description("Return only logs with duration_ms greater than or equal to this value. Optional."),
-		),
-		mcp.WithString("since",
-			mcp.Description("Time window relative to now (e.g. '15m', '1h', '24h'). Default: '1h'."),
-		),
-		mcp.WithString("start_time",
-			mcp.Description("RFC3339 start time. Overrides 'since' if provided."),
-		),
-		mcp.WithString("end_time",
-			mcp.Description("RFC3339 end time. Defaults to now."),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of entries to return. Default 100, max 1000."),
-			mcp.Min(1), mcp.Max(1000), mcp.DefaultNumber(100),
-		),
-		mcp.WithString("stream",
-			mcp.Description("OpenObserve stream name. Default 'default'."),
-		),
+Returns matching log entries, newest first.`,
+		[]mcp.ToolOption{
+			mcp.WithString("service", mcp.Description("Filter by service name (e.g. 'payment', 'checkout', 'api'). Optional.")),
+			levelOption,
+			mcp.WithString("status", mcp.Description("Filter by HTTP status code (e.g. '500', '404'). Optional.")),
+			mcp.WithString("trace_id", mcp.Description("Filter by trace ID. Optional.")),
+			mcp.WithString("message_contains", mcp.Description("Case-insensitive substring match against the message field. Optional.")),
+			mcp.WithNumber("min_duration_ms", mcp.Description("Only logs with duration_ms >= this value. Optional."), mcp.Min(0)),
+			limitOption(100, 1000),
+		},
+		windowOptions("1h"),
 	)
 }
 
 func (s *Server) getRecentLogsTool() mcp.Tool {
-	return mcp.NewTool("get_recent_logs",
-		mcp.WithDescription(`Return the most recent log entries, optionally filtered by service.
+	return newTool("get_recent_logs", `Return the most recent log entries, optionally filtered by service or level.
 
-Use this when the user asks things like 'show me the latest errors' or
-'what just happened in the api service'.`),
-		mcp.WithString("service",
-			mcp.Description("Filter by service name. Optional."),
-		),
-		mcp.WithString("level",
-			mcp.Description("Filter by log level. Optional."),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Number of entries to return. Default 20."),
-			mcp.Min(1), mcp.Max(500), mcp.DefaultNumber(20),
-		),
+Use this when the user asks things like 'what just happened in the api service'.`,
+		[]mcp.ToolOption{
+			mcp.WithString("service", mcp.Description("Filter by service name. Optional.")),
+			levelOption,
+			limitOption(20, 500),
+			mcp.WithString("since", mcp.Description("How far back to look (e.g. '15m', '1h', '24h'). Default: '1h'.")),
+		},
 	)
 }
 
 func (s *Server) searchErrorsTool() mcp.Tool {
-	return mcp.NewTool("search_errors",
-		mcp.WithDescription(`Search for error-level logs.
+	return newTool("search_errors", `Search for error-level logs.
 
 Use this when the user asks 'show me errors', 'what is failing', or
-'find recent exceptions'.`),
-		mcp.WithString("service",
-			mcp.Description("Filter by service name. Optional."),
-		),
-		mcp.WithString("since",
-			mcp.Description("Time window. Default '1h'."),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Max entries. Default 100."),
-			mcp.Min(1), mcp.Max(1000), mcp.DefaultNumber(100),
-		),
+'find recent exceptions'.`,
+		[]mcp.ToolOption{
+			mcp.WithString("service", mcp.Description("Filter by service name. Optional.")),
+			limitOption(100, 1000),
+		},
+		windowOptions("1h"),
 	)
 }
 
 func (s *Server) queryMetricsTool() mcp.Tool {
-	return mcp.NewTool("query_metrics",
-		mcp.WithDescription(`Run an aggregation query against a metric.
+	return newTool("query_metrics", `Run an aggregation over a metric.
 
 Use this when the user asks about request rates, error rates, latency,
-CPU or memory usage, or any other numeric metric.
-
-Common aggregations: avg, sum, count, max, min, p95, p99.`),
-		mcp.WithString("metric",
-			mcp.Description("Metric name (e.g. 'http_requests_total', 'http_request_duration_ms')."),
-			mcp.Required(),
-		),
-		mcp.WithString("aggregation",
-			mcp.Description("Aggregation function. One of: avg, sum, count, max, min, p95, p99. Default: avg."),
-			mcp.Enum("avg", "sum", "count", "max", "min", "p95", "p99"),
-		),
-		mcp.WithString("service",
-			mcp.Description("Filter by service. Optional."),
-		),
-		mcp.WithString("group_by",
-			mcp.Description("Comma-separated list of fields to group by (e.g. 'service,status'). Optional."),
-		),
-		mcp.WithString("since",
-			mcp.Description("Time window. Default '1h'."),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Max groups. Default 100."),
-			mcp.Min(1), mcp.Max(1000), mcp.DefaultNumber(100),
-		),
+CPU or memory usage, or any other numeric metric. Call list_metrics first
+if you don't know the metric name.`,
+		[]mcp.ToolOption{
+			mcp.WithString("metric", mcp.Description("Metric name (e.g. 'http_requests_total', 'http_request_duration_ms')."), mcp.Required()),
+			mcp.WithString("aggregation",
+				mcp.Description("Aggregation function. Default: avg."),
+				mcp.Enum("avg", "sum", "count", "max", "min", "p50", "p90", "p95", "p99"),
+			),
+			mcp.WithString("service", mcp.Description("Filter by service. Optional.")),
+			mcp.WithString("group_by", mcp.Description("Comma-separated fields to group by: service, environment, host. Optional.")),
+			limitOption(100, 1000),
+		},
+		windowOptions("1h"),
 	)
 }
 
 func (s *Server) getMetricTool() mcp.Tool {
-	return mcp.NewTool("get_metric",
-		mcp.WithDescription(`Get the average value of a metric across a time window.
+	return newTool("get_metric", `Get the average value of a metric across a time window.
 
-Returns the mean value of `+"`value`"+` for the named metric (optionally
-filtered by service). Use `+"`query_metrics`"+` for other aggregations
-(sum, p95, p99).`),
-		mcp.WithString("metric",
-			mcp.Description("Metric name."),
-			mcp.Required(),
-		),
-		mcp.WithString("service",
-			mcp.Description("Filter by service. Optional."),
-		),
-		mcp.WithString("since",
-			mcp.Description("Time window. Default '1h'."),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Max samples. Default 100."),
-			mcp.Min(1), mcp.Max(1000), mcp.DefaultNumber(100),
-		),
+Use query_metrics for other aggregations (sum, p95, p99) or grouping.`,
+		[]mcp.ToolOption{
+			mcp.WithString("metric", mcp.Description("Metric name."), mcp.Required()),
+			mcp.WithString("service", mcp.Description("Filter by service. Optional.")),
+		},
+		windowOptions("1h"),
+	)
+}
+
+func (s *Server) listMetricsTool() mcp.Tool {
+	return newTool("list_metrics", `List the metric names that have data in the time window, with sample counts.
+
+Use this to discover valid metric names before calling query_metrics or get_metric.`,
+		windowOptions("24h"),
+	)
+}
+
+func (s *Server) listServicesTool() mcp.Tool {
+	return newTool("list_services", `List the services that emitted logs in the time window, with log counts.
+
+Use this to discover valid service names for the other tools' 'service' filter.`,
+		windowOptions("24h"),
 	)
 }
 
 func (s *Server) searchTracesTool() mcp.Tool {
-	return mcp.NewTool("search_traces",
-		mcp.WithDescription(`Search for spans (traces) matching service/operation/status filters.
+	return newTool("search_traces", `Search spans matching service/operation/status filters.
 
 Use this when the user asks about traces, distributed requests, or
-'show me failed requests'.`),
-		mcp.WithString("service",
-			mcp.Description("Filter by service name."),
-		),
-		mcp.WithString("operation",
-			mcp.Description("Filter by operation name (e.g. 'POST /checkout')."),
-		),
-		mcp.WithString("status",
-			mcp.Description("Filter by span status. 'ok' or 'error'."),
-			mcp.Enum("ok", "error"),
-		),
-		mcp.WithString("trace_id",
-			mcp.Description("Filter by trace ID."),
-		),
-		mcp.WithNumber("min_duration_ms",
-			mcp.Description("Return only spans with duration >= this many milliseconds."),
-		),
-		mcp.WithString("since",
-			mcp.Description("Time window. Default '1h'."),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Max spans. Default 100."),
-			mcp.Min(1), mcp.Max(1000), mcp.DefaultNumber(100),
-		),
+'show me failed requests'. Span 'duration' is in microseconds.`,
+		[]mcp.ToolOption{
+			mcp.WithString("service", mcp.Description("Filter by service name.")),
+			mcp.WithString("operation", mcp.Description("Filter by operation name (e.g. 'POST /checkout').")),
+			mcp.WithString("status", mcp.Description("Filter by span status."), mcp.Enum("ok", "error")),
+			mcp.WithString("trace_id", mcp.Description("Filter by trace ID.")),
+			mcp.WithNumber("min_duration_ms", mcp.Description("Only spans lasting at least this many milliseconds."), mcp.Min(0)),
+			limitOption(100, 1000),
+		},
+		windowOptions("1h"),
 	)
 }
 
 func (s *Server) getTraceTool() mcp.Tool {
-	return mcp.NewTool("get_trace",
-		mcp.WithDescription(`Retrieve all spans for a single trace ID.
+	return newTool("get_trace", `Retrieve all spans for a single trace ID, in start-time order.
 
-Use this when the user wants to see the full call graph for a specific
-request.`),
-		mcp.WithString("trace_id",
-			mcp.Description("The trace ID to look up."),
-			mcp.Required(),
-		),
+Use this when the user wants the full call graph for a specific request.
+Span 'duration' is in microseconds.`,
+		[]mcp.ToolOption{
+			mcp.WithString("trace_id", mcp.Description("The trace ID to look up."), mcp.Required()),
+			mcp.WithString("since", mcp.Description("How far back to search. Default: '7d'.")),
+		},
 	)
 }
 
 func (s *Server) getServiceErrorsTool() mcp.Tool {
-	return mcp.NewTool("get_service_errors",
-		mcp.WithDescription(`Count error entries per service within a time window.
+	return newTool("get_service_errors", `Count error entries per service within a time window, most errors first.
 
 Use this when the user asks 'which service has the most errors' or
-'give me error counts by service'.`),
-		mcp.WithString("since",
-			mcp.Description("Time window. Default '1h'."),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Max services to return. Default 20."),
-			mcp.Min(1), mcp.Max(100), mcp.DefaultNumber(20),
-		),
+'give me error counts by service'.`,
+		[]mcp.ToolOption{limitOption(20, 100)},
+		windowOptions("1h"),
 	)
 }
 
 func (s *Server) getSlowRequestsTool() mcp.Tool {
-	return mcp.NewTool("get_slow_requests",
-		mcp.WithDescription(`Return the slowest HTTP requests in the time window.
+	return newTool("get_slow_requests", `Return the slowest HTTP requests in the time window, slowest first.
 
-Use this when the user asks about slow requests, latency, or p95/p99.`),
-		mcp.WithString("service",
-			mcp.Description("Filter by service. Optional."),
-		),
-		mcp.WithNumber("min_duration_ms",
-			mcp.Description("Minimum duration_ms threshold. Default 1000."),
-			mcp.Min(0), mcp.DefaultNumber(1000),
-		),
-		mcp.WithString("since",
-			mcp.Description("Time window. Default '1h'."),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Max entries. Default 20."),
-			mcp.Min(1), mcp.Max(500), mcp.DefaultNumber(20),
-		),
+Use this when the user asks about slow requests or latency outliers.`,
+		[]mcp.ToolOption{
+			mcp.WithString("service", mcp.Description("Filter by service. Optional.")),
+			mcp.WithNumber("min_duration_ms", mcp.Description("Minimum duration_ms threshold. Default 1000."), mcp.Min(0), mcp.DefaultNumber(1000)),
+			limitOption(20, 500),
+		},
+		windowOptions("1h"),
 	)
 }
 
 func (s *Server) getErrorSummaryTool() mcp.Tool {
-	return mcp.NewTool("get_error_summary",
-		mcp.WithDescription(`Summarize errors: total count, per-service counts, and HTTP status
+	return newTool("get_error_summary", `Summarize errors: total count, per-service counts, and HTTP status
 breakdown for the time window.
 
-Use this when the user wants a high-level error overview.`),
-		mcp.WithString("since",
-			mcp.Description("Time window. Default '1h'."),
-		),
+Use this when the user wants a high-level error overview.`,
+		windowOptions("1h"),
 	)
 }
 
-func (s *Server) handleSearchLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	var callErr error
-	defer func() { s.logToolCall("search_logs", start, callErr) }()
-
-	args := req.GetArguments()
-	r := openobserve.SearchLogsRequest{
-		Stream:          stringArg(args, "stream", "default"),
+func (s *Server) searchLogs(ctx context.Context, args map[string]any) (any, []string, error) {
+	rng, err := windowFromArgs(args, "1h")
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
+		Stream:          logsStream,
 		Service:         stringArg(args, "service", ""),
 		Level:           stringArg(args, "level", ""),
 		Status:          stringArg(args, "status", ""),
 		TraceID:         stringArg(args, "trace_id", ""),
 		MessageContains: stringArg(args, "message_contains", ""),
-	}
-
-	if v, ok := args["min_duration_ms"].(float64); ok {
-		r.MinDurationMS = int(v)
-	}
-	if v, ok := args["limit"].(float64); ok {
-		r.Limit = int(v)
-	}
-
-	rng, err := windowFromArgs(args)
-	if err != nil {
-		callErr = err
-		return errorResult(err), nil
-	}
-	r.Range = rng
-
-	resp, err := s.client.SearchLogs(ctx, r)
-	if err != nil {
-		callErr = err
-		return errorResult(err), nil
-	}
-	return jsonResult(resp)
-}
-
-func (s *Server) handleGetRecentLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	var callErr error
-	defer func() { s.logToolCall("get_recent_logs", start, callErr) }()
-
-	args := req.GetArguments()
-	limit := int(floatArg(args, "limit", 20))
-	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
-		Limit:   limit,
-		Service: stringArg(args, "service", ""),
-		Level:   stringArg(args, "level", ""),
-		Stream:  "default",
-		Range:   openobserve.NowRange(time.Hour),
+		MinDurationMS:   int(floatArg(args, "min_duration_ms", 0)),
+		Limit:           int(floatArg(args, "limit", 100)),
+		Range:           rng,
 	})
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
-	return jsonResult(resp)
+	return resp, []string{resp.QuerySQL}, nil
 }
 
-func (s *Server) handleSearchErrors(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	var callErr error
-	defer func() { s.logToolCall("search_errors", start, callErr) }()
-
-	args := req.GetArguments()
-	limit := int(floatArg(args, "limit", 100))
-	rng, err := windowFromArgs(args)
+func (s *Server) getRecentLogs(ctx context.Context, args map[string]any) (any, []string, error) {
+	rng, err := windowFromArgs(map[string]any{"since": stringArg(args, "since", "")}, "1h")
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
 	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
-		Stream:  "default",
+		Stream:  logsStream,
 		Service: stringArg(args, "service", ""),
-		Level:   "ERROR",
-		Limit:   limit,
+		Level:   stringArg(args, "level", ""),
+		Limit:   int(floatArg(args, "limit", 20)),
 		Range:   rng,
 	})
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
-	return jsonResult(resp)
+	return resp, []string{resp.QuerySQL}, nil
 }
 
-func (s *Server) handleQueryMetrics(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	var callErr error
-	defer func() { s.logToolCall("query_metrics", start, callErr) }()
+func (s *Server) searchErrors(ctx context.Context, args map[string]any) (any, []string, error) {
+	rng, err := windowFromArgs(args, "1h")
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
+		Stream:  logsStream,
+		Service: stringArg(args, "service", ""),
+		Level:   "ERROR",
+		Limit:   int(floatArg(args, "limit", 100)),
+		Range:   rng,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return resp, []string{resp.QuerySQL}, nil
+}
 
-	args := req.GetArguments()
+func (s *Server) queryMetrics(ctx context.Context, args map[string]any) (any, []string, error) {
 	metric := stringArg(args, "metric", "")
 	if metric == "" {
-		callErr = fmt.Errorf("metric is required")
-		return errorResult(callErr), nil
+		return nil, nil, fmt.Errorf("metric is required")
+	}
+	rng, err := windowFromArgs(args, "1h")
+	if err != nil {
+		return nil, nil, err
 	}
 	agg := strings.ToLower(stringArg(args, "aggregation", "avg"))
-	groupBy := splitCSV(stringArg(args, "group_by", ""))
-	limit := int(floatArg(args, "limit", 100))
-	rng, err := windowFromArgs(args)
-	if err != nil {
-		callErr = err
-		return errorResult(err), nil
-	}
-
 	resp, err := s.client.QueryMetrics(ctx, openobserve.QueryMetricsRequest{
+		Stream:      metricsStream,
 		MetricName:  metric,
 		Aggregation: agg,
 		Service:     stringArg(args, "service", ""),
-		GroupBy:     groupBy,
+		GroupBy:     splitCSV(stringArg(args, "group_by", "")),
 		Range:       rng,
-		Limit:       limit,
+		Limit:       int(floatArg(args, "limit", 100)),
 	})
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
-	return jsonResult(resp)
+	return map[string]any{
+		"metric":      metric,
+		"aggregation": agg,
+		"results":     resp.Hits,
+		"window":      rng,
+	}, []string{resp.QuerySQL}, nil
 }
 
-func (s *Server) handleGetMetric(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	var callErr error
-	defer func() { s.logToolCall("get_metric", start, callErr) }()
-
-	args := req.GetArguments()
+func (s *Server) getMetric(ctx context.Context, args map[string]any) (any, []string, error) {
 	metric := stringArg(args, "metric", "")
 	if metric == "" {
-		callErr = fmt.Errorf("metric is required")
-		return errorResult(callErr), nil
+		return nil, nil, fmt.Errorf("metric is required")
 	}
-	limit := int(floatArg(args, "limit", 100))
-	rng, err := windowFromArgs(args)
+	rng, err := windowFromArgs(args, "1h")
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
 	resp, err := s.client.QueryMetrics(ctx, openobserve.QueryMetricsRequest{
+		Stream:      metricsStream,
 		MetricName:  metric,
 		Aggregation: "avg",
 		Service:     stringArg(args, "service", ""),
 		Range:       rng,
-		Limit:       limit,
+		Limit:       1,
 	})
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
-	return jsonResult(resp)
+	// avg over zero rows is SQL NULL; surface that as "no data", not 0.
+	var value any
+	if len(resp.Hits) > 0 {
+		value = resp.Hits[0]["value"]
+	}
+	return map[string]any{
+		"metric":      metric,
+		"aggregation": "avg",
+		"value":       value,
+		"window":      rng,
+	}, []string{resp.QuerySQL}, nil
 }
 
-func (s *Server) handleSearchTraces(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	var callErr error
-	defer func() { s.logToolCall("search_traces", start, callErr) }()
-
-	args := req.GetArguments()
-	limit := int(floatArg(args, "limit", 100))
-	rng, err := windowFromArgs(args)
+func (s *Server) listMetrics(ctx context.Context, args map[string]any) (any, []string, error) {
+	rng, err := windowFromArgs(args, "24h")
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
-	}
-	r := openobserve.SearchTracesRequest{
-		Stream:    "traces",
-		Service:   stringArg(args, "service", ""),
-		Operation: stringArg(args, "operation", ""),
-		Status:    stringArg(args, "status", ""),
-		TraceID:   stringArg(args, "trace_id", ""),
-		Limit:     limit,
-		Range:     rng,
-	}
-	if v, ok := args["min_duration_ms"].(float64); ok {
-		r.MinSpanDur = int(v) * 1000
-	}
-	resp, err := s.client.SearchTraces(ctx, r)
-	if err != nil {
-		callErr = err
-		return errorResult(err), nil
-	}
-	return jsonResult(resp)
-}
-
-func (s *Server) handleGetTrace(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	var callErr error
-	defer func() { s.logToolCall("get_trace", start, callErr) }()
-
-	args := req.GetArguments()
-	traceID := stringArg(args, "trace_id", "")
-	if traceID == "" {
-		callErr = fmt.Errorf("trace_id is required")
-		return errorResult(callErr), nil
-	}
-	resp, err := s.client.GetTrace(ctx, "traces", traceID)
-	if err != nil {
-		callErr = err
-		return errorResult(err), nil
-	}
-	return jsonResult(resp)
-}
-
-func (s *Server) handleGetServiceErrors(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	var callErr error
-	defer func() { s.logToolCall("get_service_errors", start, callErr) }()
-
-	args := req.GetArguments()
-	rng, err := windowFromArgs(args)
-	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
 	resp, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
-		Stream:  "default",
-		GroupBy: "service",
-		Where:   []string{"level = 'ERROR'"},
+		Stream:  metricsStream,
+		GroupBy: "metric_name",
 		Range:   rng,
 	})
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
-	return jsonResult(map[string]any{
-		"total_errors": resp.Total,
-		"by_service":   resp.Groups,
-		"window":       rng,
+	return map[string]any{"metrics": resp.Groups, "window": rng}, []string{resp.QuerySQL}, nil
+}
+
+func (s *Server) listServices(ctx context.Context, args map[string]any) (any, []string, error) {
+	rng, err := windowFromArgs(args, "24h")
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
+		Stream:  logsStream,
+		GroupBy: "service",
+		Range:   rng,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return map[string]any{"services": resp.Groups, "window": rng}, []string{resp.QuerySQL}, nil
+}
+
+func (s *Server) searchTraces(ctx context.Context, args map[string]any) (any, []string, error) {
+	rng, err := windowFromArgs(args, "1h")
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := s.client.SearchTraces(ctx, openobserve.SearchTracesRequest{
+		Stream:     tracesStream,
+		Service:    stringArg(args, "service", ""),
+		Operation:  stringArg(args, "operation", ""),
+		Status:     stringArg(args, "status", ""),
+		TraceID:    stringArg(args, "trace_id", ""),
+		MinSpanDur: int(floatArg(args, "min_duration_ms", 0)) * 1000, // ms -> µs
+		Limit:      int(floatArg(args, "limit", 100)),
+		Range:      rng,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return resp, []string{resp.QuerySQL}, nil
+}
+
+func (s *Server) getTrace(ctx context.Context, args map[string]any) (any, []string, error) {
+	traceID := stringArg(args, "trace_id", "")
+	if traceID == "" {
+		return nil, nil, fmt.Errorf("trace_id is required")
+	}
+	rng, err := windowFromArgs(map[string]any{"since": stringArg(args, "since", "")}, "7d")
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := s.client.GetTrace(ctx, tracesStream, traceID, rng)
+	if err != nil {
+		return nil, nil, err
+	}
+	return map[string]any{
+		"trace_id":   traceID,
+		"span_count": resp.Count,
+		"spans":      resp.Hits,
+	}, []string{resp.QuerySQL}, nil
+}
+
+func (s *Server) errorsBy(ctx context.Context, field string, rng openobserve.TimeRange) (*openobserve.AggregateLogsResponse, error) {
+	return s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
+		Stream:  logsStream,
+		GroupBy: field,
+		Where:   []string{"level = 'ERROR'"},
+		Range:   rng,
 	})
 }
 
-func (s *Server) handleGetSlowRequests(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	var callErr error
-	defer func() { s.logToolCall("get_slow_requests", start, callErr) }()
-
-	args := req.GetArguments()
-	minDuration := int(floatArg(args, "min_duration_ms", 1000))
-	limit := int(floatArg(args, "limit", 20))
-	rng, err := windowFromArgs(args)
+func (s *Server) getServiceErrors(ctx context.Context, args map[string]any) (any, []string, error) {
+	rng, err := windowFromArgs(args, "1h")
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
+	}
+	resp, err := s.errorsBy(ctx, "service", rng)
+	if err != nil {
+		return nil, nil, err
+	}
+	groups := resp.Groups
+	if limit := int(floatArg(args, "limit", 20)); limit > 0 && len(groups) > limit {
+		groups = groups[:limit]
+	}
+	return map[string]any{
+		"total_errors": resp.Total,
+		"by_service":   groups,
+		"window":       rng,
+	}, []string{resp.QuerySQL}, nil
+}
+
+func (s *Server) getSlowRequests(ctx context.Context, args map[string]any) (any, []string, error) {
+	rng, err := windowFromArgs(args, "1h")
+	if err != nil {
+		return nil, nil, err
 	}
 	resp, err := s.client.SearchLogs(ctx, openobserve.SearchLogsRequest{
-		Stream:        "default",
+		Stream:        logsStream,
 		Service:       stringArg(args, "service", ""),
-		MinDurationMS: minDuration,
-		Limit:         limit,
+		MinDurationMS: int(floatArg(args, "min_duration_ms", 1000)),
+		OrderBy:       openobserve.OrderByDuration,
+		Limit:         int(floatArg(args, "limit", 20)),
 		Range:         rng,
 	})
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
-	return jsonResult(resp)
+	return resp, []string{resp.QuerySQL}, nil
 }
 
-func (s *Server) handleGetErrorSummary(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	var callErr error
-	defer func() { s.logToolCall("get_error_summary", start, callErr) }()
-
-	args := req.GetArguments()
-	rng, err := windowFromArgs(args)
+func (s *Server) getErrorSummary(ctx context.Context, args map[string]any) (any, []string, error) {
+	rng, err := windowFromArgs(args, "1h")
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
-
-	byService, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
-		Stream:  "default",
-		GroupBy: "service",
-		Where:   []string{"level = 'ERROR'"},
-		Range:   rng,
-	})
+	byService, err := s.errorsBy(ctx, "service", rng)
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
-	byStatus, err := s.client.AggregateLogs(ctx, openobserve.AggregateLogsRequest{
-		Stream:  "default",
-		GroupBy: "status",
-		Where:   []string{"level = 'ERROR'"},
-		Range:   rng,
-	})
+	byStatus, err := s.errorsBy(ctx, "status", rng)
 	if err != nil {
-		callErr = err
-		return errorResult(err), nil
+		return nil, nil, err
 	}
-
-	return jsonResult(map[string]any{
+	return map[string]any{
 		"total_errors": byService.Total,
 		"by_service":   byService.Groups,
 		"by_status":    byStatus.Groups,
 		"window":       rng,
-	})
+	}, []string{byService.QuerySQL, byStatus.QuerySQL}, nil
 }

@@ -25,7 +25,7 @@ up: ## Start OpenObserve (and wait for healthy)
 	$(DC) up -d
 	@echo "Waiting for OpenObserve..."
 	@for i in $$(seq 1 30); do \
-	  status=$$(curl -sf http://localhost:5080/health > /dev/null && echo ok || echo fail); \
+	  status=$$(curl -sf http://localhost:5080/healthz > /dev/null && echo ok || echo fail); \
 	  if [ "$$status" = "ok" ]; then echo "OpenObserve is healthy"; exit 0; fi; \
 	  sleep 2; \
 	done; \

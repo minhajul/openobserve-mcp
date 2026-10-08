@@ -42,7 +42,10 @@ func run(host string) error {
 		return fmt.Errorf("openobserve unhealthy: %w", err)
 	}
 
-	seed := time.Now().UTC().Truncate(time.Hour)
+	// Records are spread over the hour before now (offsets are deterministic),
+	// so the tools' default 1h window sees the full data set right after seeding.
+	// OpenObserve rejects event times older than ZO_INGEST_ALLOWED_UPTO (5h).
+	seed := time.Now().UTC().Truncate(time.Second)
 	logs := generateLogs(seed, host)
 	metrics := generateMetrics(seed, host)
 	spans := generateSpans(seed, host)
@@ -64,7 +67,7 @@ func run(host string) error {
 
 	manifest := map[string]any{
 		"seed_window_start": seed.Add(-1 * time.Hour).Format(time.RFC3339),
-		"seed_window_end":   seed.Add(1 * time.Hour).Format(time.RFC3339),
+		"seed_window_end":   seed.Format(time.RFC3339),
 		"counts": map[string]int{
 			"logs":    len(logs),
 			"metrics": len(metrics),
@@ -120,7 +123,7 @@ func generateLogs(seed time.Time, host string) []openobserve.LogEntry {
 			dur += 500
 		}
 		entry := openobserve.LogEntry{
-			"timestamp":   ts.UnixMicro(),
+			"_timestamp":  ts.UnixMicro(),
 			"level":       level,
 			"service":     svc,
 			"environment": environments[r.Intn(len(environments))],
@@ -245,7 +248,7 @@ func generateMetrics(seed time.Time, host string) []map[string]any {
 		}
 		ts := seed.Add(-time.Duration(r.Intn(3600)) * time.Second)
 		out = append(out, map[string]any{
-			"timestamp":   ts.UnixMicro(),
+			"_timestamp":  ts.UnixMicro(),
 			"metric_name": metric,
 			"service":     svc,
 			"environment": environments[r.Intn(len(environments))],
@@ -278,7 +281,7 @@ func generateSpans(seed time.Time, host string) []openobserve.TraceSpan {
 
 		out = append(out,
 			openobserve.TraceSpan{
-				"timestamp":      ts.UnixMicro(),
+				"_timestamp":     ts.UnixMicro(),
 				"trace_id":       traceID,
 				"span_id":        parentSpanID,
 				"parent_span_id": "",
@@ -289,7 +292,7 @@ func generateSpans(seed time.Time, host string) []openobserve.TraceSpan {
 				"host":           fmt.Sprintf("%s-%d", host, r.Intn(4)+1),
 			},
 			openobserve.TraceSpan{
-				"timestamp":      ts.Add(time.Duration(parentDur/2) * time.Millisecond).UnixMicro(),
+				"_timestamp":     ts.Add(time.Duration(parentDur/2) * time.Millisecond).UnixMicro(),
 				"trace_id":       traceID,
 				"span_id":        childSpanID,
 				"parent_span_id": parentSpanID,

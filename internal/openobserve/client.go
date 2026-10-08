@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/puku/openobserve-mcp/internal/config"
+	"github.com/puku/openobserve-mcp/internal/sqlbuilder"
 )
 
 const schemaTTL = 5 * time.Minute
@@ -51,7 +52,7 @@ func NewClientWithTransport(cfg *config.Config, t Transport) *Client {
 }
 
 func (c *Client) Healthy(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/healthz", nil)
 	if err != nil {
 		return err
 	}
@@ -172,6 +173,7 @@ type searchQuery struct {
 }
 
 func searchBody(sql string, r TimeRange, from, size int) map[string]any {
+	r = r.Normalize()
 	return map[string]any{
 		"query": searchQuery{
 			SQL:       sql,
@@ -187,30 +189,22 @@ func (c *Client) streamSchema(ctx context.Context, stream string) (map[string]bo
 	if fields, ok := c.cachedSchema(stream); ok {
 		return fields, nil
 	}
-	endpoint := fmt.Sprintf("/api/%s/streams",
-		url.PathEscape(c.cfg.OpenObserveOrg))
+	endpoint := fmt.Sprintf("/api/%s/streams/%s/schema?type=logs",
+		url.PathEscape(c.cfg.OpenObserveOrg), url.PathEscape(stream))
 	var resp struct {
-		List []struct {
-			Name   string `json:"name"`
-			Schema []struct {
-				Name string `json:"name"`
-			} `json:"schema"`
-		} `json:"list"`
+		Schema []struct {
+			Name string `json:"name"`
+		} `json:"schema"`
 	}
 	if err := c.do(ctx, "GET", endpoint, nil, &resp); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stream %q schema: %w", stream, err)
 	}
-	for _, s := range resp.List {
-		if s.Name == stream {
-			out := make(map[string]bool, len(s.Schema))
-			for _, f := range s.Schema {
-				out[f.Name] = true
-			}
-			c.storeSchema(stream, out)
-			return out, nil
-		}
+	out := make(map[string]bool, len(resp.Schema))
+	for _, f := range resp.Schema {
+		out[f.Name] = true
 	}
-	return nil, fmt.Errorf("stream %q not found", stream)
+	c.storeSchema(stream, out)
+	return out, nil
 }
 
 func (c *Client) cachedSchema(stream string) (map[string]bool, bool) {
@@ -239,4 +233,19 @@ func (c *Client) ResolveColumns(ctx context.Context, stream string) ([]string, e
 		out = append(out, name)
 	}
 	return out, nil
+}
+
+// humanizeTimestamps replaces OpenObserve's microsecond `_timestamp` with an
+// RFC3339 `timestamp`, so callers never deal with storage-level time columns.
+func humanizeTimestamps[M ~map[string]any](hits []M) {
+	for _, h := range hits {
+		v, ok := h[sqlbuilder.TimestampCol]
+		if !ok {
+			continue
+		}
+		delete(h, sqlbuilder.TimestampCol)
+		if us, ok := v.(float64); ok {
+			h["timestamp"] = time.UnixMicro(int64(us)).UTC().Format(time.RFC3339Nano)
+		}
+	}
 }

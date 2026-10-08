@@ -17,8 +17,12 @@ func TestParseDuration(t *testing.T) {
 		{"1h", time.Hour, false},
 		{"24h", 24 * time.Hour, false},
 		{"30", 30 * time.Minute, false},
+		{"7d", 7 * 24 * time.Hour, false},
 		{"  ", 0, false},
 		{"bogus", 0, true},
+		{"xd", 0, true},
+		{"-1h", 0, true},
+		{"0", 0, true},
 	}
 	for _, tc := range cases {
 		got, err := parseDuration(tc.in)
@@ -117,7 +121,7 @@ func TestResolveTimeWindowInvalidEndTime(t *testing.T) {
 }
 
 func TestWindowFromArgsDefaults(t *testing.T) {
-	rng, err := windowFromArgs(map[string]any{})
+	rng, err := windowFromArgs(map[string]any{}, "1h")
 	if err != nil {
 		t.Fatalf("windowFromArgs empty: %v", err)
 	}
@@ -127,7 +131,7 @@ func TestWindowFromArgsDefaults(t *testing.T) {
 }
 
 func TestWindowFromArgsSince(t *testing.T) {
-	rng, err := windowFromArgs(map[string]any{"since": "45m"})
+	rng, err := windowFromArgs(map[string]any{"since": "45m"}, "1h")
 	if err != nil {
 		t.Fatalf("windowFromArgs since: %v", err)
 	}
@@ -143,7 +147,7 @@ func TestWindowFromArgsStartEndOverride(t *testing.T) {
 		"start_time": startStr,
 		"end_time":   endStr,
 		"since":      "ignored",
-	})
+	}, "1h")
 	if err != nil {
 		t.Fatalf("windowFromArgs start/end: %v", err)
 	}
@@ -151,5 +155,22 @@ func TestWindowFromArgsStartEndOverride(t *testing.T) {
 	wantEnd, _ := time.Parse(time.RFC3339, endStr)
 	if !rng.Start.Equal(wantStart) || !rng.End.Equal(wantEnd) {
 		t.Errorf("got [%v, %v], want [%v, %v]", rng.Start, rng.End, wantStart, wantEnd)
+	}
+}
+
+func TestWindowFromArgsUsesToolDefault(t *testing.T) {
+	rng, err := windowFromArgs(map[string]any{}, "24h")
+	if err != nil {
+		t.Fatalf("windowFromArgs: %v", err)
+	}
+	if rng.End.Sub(rng.Start) != 24*time.Hour {
+		t.Errorf("default window = %v, want 24h", rng.End.Sub(rng.Start))
+	}
+}
+
+func TestResolveTimeWindowRejectsInvertedRange(t *testing.T) {
+	_, _, err := resolveTimeWindow("2026-01-02T00:00:00Z", "2026-01-01T00:00:00Z", "")
+	if err == nil {
+		t.Fatal("expected error when start_time is after end_time")
 	}
 }

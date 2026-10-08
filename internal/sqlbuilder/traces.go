@@ -7,25 +7,26 @@ import (
 )
 
 type SearchTracesRequest struct {
-	Stream     string
-	Service    string
-	Operation  string
-	Status     string
-	TraceID    string
+	Stream    string
+	Service   string
+	Operation string
+	Status    string
+	TraceID   string
+	// MinSpanDur is in microseconds, the unit of the `duration` column.
 	MinSpanDur int
 	Range      TimeRange
 	Limit      int
 }
 
 func TracesBuild(ctx context.Context, req SearchTracesRequest) (string, []any, error) {
-	if req.Limit <= 0 {
-		req.Limit = 100
+	from, err := stream(req.Stream)
+	if err != nil {
+		return "", nil, err
 	}
-	if req.Range.Start.IsZero() || req.Range.End.IsZero() {
-		req.Range = NowRange(0)
-	}
+	limit := clampLimit(req.Limit, 100)
+	rng := req.Range.Normalize()
 
-	where := req.Range.Where()
+	where := rng.Where()
 	if req.Service != "" {
 		where = append(where, fmt.Sprintf("service = '%s'", escape(req.Service)))
 	}
@@ -42,11 +43,18 @@ func TracesBuild(ctx context.Context, req SearchTracesRequest) (string, []any, e
 		where = append(where, fmt.Sprintf("duration >= %d", req.MinSpanDur))
 	}
 
+	order := TimestampCol + " DESC"
+	if req.TraceID != "" {
+		// A single trace reads best root-first, in causal order.
+		order = TimestampCol + " ASC"
+	}
 	sql := fmt.Sprintf(
-		"SELECT trace_id, span_id, parent_span_id, service, operation, duration, status, timestamp FROM %s WHERE %s ORDER BY timestamp DESC LIMIT %d",
-		req.Stream,
+		"SELECT %s, trace_id, span_id, parent_span_id, service, operation, duration, status FROM %s WHERE %s ORDER BY %s LIMIT %d",
+		TimestampCol,
+		from,
 		strings.Join(where, " AND "),
-		req.Limit,
+		order,
+		limit,
 	)
 	return sql, nil, nil
 }

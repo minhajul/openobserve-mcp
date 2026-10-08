@@ -49,7 +49,7 @@ func newLogger(path, levelName string) *slog.Logger {
 		level = slog.LevelDebug
 	}
 	if path != "" {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "cannot open log file %s: %v\n", path, err)
 			return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))

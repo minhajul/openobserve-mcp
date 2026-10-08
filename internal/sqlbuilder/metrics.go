@@ -16,48 +16,60 @@ type QueryMetricsRequest struct {
 	Limit       int
 }
 
+var aggregations = map[string]string{
+	"avg":   "avg(value)",
+	"sum":   "sum(value)",
+	"count": "count(value)",
+	"max":   "max(value)",
+	"min":   "min(value)",
+	"p50":   "approx_percentile_cont(value, 0.5)",
+	"p90":   "approx_percentile_cont(value, 0.9)",
+	"p95":   "approx_percentile_cont(value, 0.95)",
+	"p99":   "approx_percentile_cont(value, 0.99)",
+}
+
 func MetricsBuild(ctx context.Context, req QueryMetricsRequest) (string, []any, error) {
-	if req.Aggregation == "" {
-		req.Aggregation = "avg"
+	if req.MetricName == "" {
+		return "", nil, fmt.Errorf("metric name is required")
 	}
-	if req.Limit <= 0 {
-		req.Limit = 100
-	}
-	if req.Range.Start.IsZero() || req.Range.End.IsZero() {
-		req.Range = NowRange(0)
-	}
-
 	agg := strings.ToLower(req.Aggregation)
-	fn := strings.ToUpper(agg)
-	if agg == "p95" || agg == "p99" {
-		fn = "approx_percentile(value, " + strings.TrimPrefix(agg, "p") + ")"
-	} else {
-		fn = fmt.Sprintf("%s(value)", fn)
+	if agg == "" {
+		agg = "avg"
 	}
+	fn, ok := aggregations[agg]
+	if !ok {
+		return "", nil, fmt.Errorf("unsupported aggregation %q", req.Aggregation)
+	}
+	from, err := stream(req.Stream)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, c := range req.GroupBy {
+		if !ValidIdent(c) {
+			return "", nil, fmt.Errorf("invalid group_by field %q", c)
+		}
+	}
+	limit := clampLimit(req.Limit, 100)
+	rng := req.Range.Normalize()
 
-	groupCols := append([]string(nil), req.GroupBy...)
-	selectCols := make([]string, 0, len(groupCols)+1)
-	selectCols = append(selectCols, groupCols...)
-	selectCols = append(selectCols, fmt.Sprintf("%s AS value", fn))
+	selectCols := append(append([]string(nil), req.GroupBy...), fmt.Sprintf("%s AS value", fn))
 
 	where := []string{
 		fmt.Sprintf("metric_name = '%s'", escape(req.MetricName)),
 	}
-	where = append(where, req.Range.Where()...)
+	where = append(where, rng.Where()...)
 	if req.Service != "" {
 		where = append(where, fmt.Sprintf("service = '%s'", escape(req.Service)))
 	}
 
 	sql := fmt.Sprintf("SELECT %s FROM %s WHERE %s",
 		strings.Join(selectCols, ", "),
-		req.Stream,
+		from,
 		strings.Join(where, " AND "),
 	)
-	if len(groupCols) > 0 {
-		sql += fmt.Sprintf(" GROUP BY %s ORDER BY value DESC", strings.Join(groupCols, ", "))
-	} else {
-		sql += " ORDER BY value DESC"
+	if len(req.GroupBy) > 0 {
+		sql += fmt.Sprintf(" GROUP BY %s ORDER BY value DESC", strings.Join(req.GroupBy, ", "))
 	}
-	sql += fmt.Sprintf(" LIMIT %d", req.Limit)
+	sql += fmt.Sprintf(" LIMIT %d", limit)
 	return sql, nil, nil
 }

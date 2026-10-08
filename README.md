@@ -14,7 +14,8 @@ the MCP server.
 |------------------------|-------------------|------------------------------------------------------------|
 | `mcp-server`           | `cmd/mcp-server`  | Speaks MCP over stdio. Exposes typed observability tools.  |
 | `seed`                 | `cmd/seed`        | Loads deterministic sample data via OpenObserve ingestion. |
-| `internal/openobserve` | client + adapters | The ONLY place OpenObserve URLs, auth, SQL, and HTTP live. |
+| `internal/openobserve` | client + adapters | The ONLY place OpenObserve URLs, auth, and HTTP live.      |
+| `internal/sqlbuilder`  | query generation  | Builds OpenObserve SQL; validates all user input.          |
 | `internal/mcp`         | tool registration | Tool schemas, parameter validation, structured logging.    |
 | `internal/config`      | typed config      | Env-var parsing + fail-fast validation.                    |
 
@@ -32,11 +33,14 @@ the MCP server.
 ```bash
 cp .env.example .env       # then edit if you changed credentials
 
-make up                     # starts OpenObserve, waits for /health
+make up                     # starts OpenObserve, waits for /healthz
 make seed                   # loads ~500 logs, 120 metrics, 60 spans
 ```
 
 The seed utility is **deterministic** — re-running it produces the same shape of data so queries are reproducible.
+Records are spread over the hour before `make seed` runs and carry their event time in OpenObserve's indexed
+`_timestamp` column, so the tools' default `1h` window sees everything right after seeding. (OpenObserve rejects event
+times older than 5h by default, so the data can't be backdated further.)
 Re-running appends; to start from a clean slate, run `make clean && make up seed`.
 
 ### Cleaning up
@@ -86,20 +90,25 @@ The MCP server is meant to be launched by an MCP client as a subprocess. Configu
 
 ## 6. MCP tools exposed
 
-| Tool                 | Purpose                                                   |
-|----------------------|-----------------------------------------------------------|
-| `search_logs`        | Filtered log search (service, level, status, message, …). |
-| `get_recent_logs`    | Most recent logs, optionally filtered.                    |
-| `search_errors`      | Convenience: ERROR-level logs.                            |
-| `query_metrics`      | Aggregation over a metric (`avg`, `p95`, `p99`, …).       |
-| `get_metric`         | Average value of a metric across a time window.           |
-| `search_traces`      | Span search by service/operation/status.                  |
-| `get_trace`          | All spans for a given `trace_id`.                         |
-| `get_service_errors` | Error count per service.                                  |
-| `get_slow_requests`  | Requests exceeding a duration threshold.                  |
-| `get_error_summary`  | Total errors + per-service and per-status breakdown.      |
+| Tool                 | Purpose                                                        |
+|----------------------|----------------------------------------------------------------|
+| `list_services`      | Services that emitted logs, with counts (discovery).           |
+| `list_metrics`       | Metric names with data, with sample counts (discovery).        |
+| `search_logs`        | Filtered log search (service, level, status, message, …).      |
+| `get_recent_logs`    | Most recent logs, optionally filtered.                         |
+| `search_errors`      | Convenience: ERROR-level logs.                                 |
+| `query_metrics`      | Aggregation over a metric (`avg`, `sum`, `p50`…`p99`, …).      |
+| `get_metric`         | Average value of a metric across a time window.                |
+| `search_traces`      | Span search by service/operation/status/duration.              |
+| `get_trace`          | All spans for a given `trace_id`, in start order (last 7d).    |
+| `get_service_errors` | Error count per service, most first.                           |
+| `get_slow_requests`  | Requests above a duration threshold, slowest first.            |
+| `get_error_summary`  | Total errors + per-service and per-status breakdown.           |
 
 Each tool has a typed JSON schema; the client only sees these names, descriptions, and typed parameters.
+
+Windowed tools accept `since` (`15m`, `1h`, `24h`, `7d`; a bare number means minutes) or RFC3339 `start_time` /
+`end_time`. Timestamps in results are RFC3339 UTC; span `duration` is in microseconds.
 
 ---
 
@@ -108,9 +117,13 @@ Each tool has a typed JSON schema; the client only sees these names, description
 To answer a question, the MCP server:
 
 1. validates the parameters,
-2. builds the appropriate OpenObserve SQL inside `internal/openobserve`,
+2. builds the appropriate OpenObserve SQL inside `internal/sqlbuilder`,
 3. hits the `/_search` endpoint via HTTP basic auth,
 4. returns a JSON result that the client uses to compose its answer.
+
+User input never reaches SQL as raw text: values are quoted and escaped, and anything used as an identifier (stream,
+`group_by` field, aggregation, level) is checked against an allowlist or an identifier pattern. The generated SQL is
+logged at `MCP_LOG_LEVEL=debug` and is never returned to the client.
 
 The MCP layer is the only place that knows about OpenObserve.
 
@@ -126,10 +139,12 @@ The MCP layer is the only place that knows about OpenObserve.
 ├── internal/
 │   ├── config/          # typed env-driven config
 │   ├── openobserve/     # the ONLY place OpenObserve details live
-│   │   ├── client.go    # HTTP client + auth + URL building
-│   │   ├── logs.go      # log search + ingest
+│   │   ├── client.go    # HTTP client + auth + URL building + schema cache
+│   │   ├── search.go    # /_search call + result normalization
+│   │   ├── logs.go      # log search/aggregation + ingest
 │   │   ├── metrics.go   # metric aggregation + ingest
 │   │   └── traces.go    # span search + ingest
+│   ├── sqlbuilder/      # pure SQL generation + input validation
 │   └── mcp/             # MCP server + tool schemas
 ├── docker-compose.yml
 ├── .env.example
@@ -144,11 +159,11 @@ The MCP layer is the only place that knows about OpenObserve.
 
 | Symptom                                                | Cause / fix                                                                    |
 |--------------------------------------------------------|--------------------------------------------------------------------------------|
-| `openobserve not healthy` warning                      | Container still starting. `make up` waits up to ~60s.                          |
+| `openobserve not healthy` warning                      | Container still starting. `make up` polls `/healthz` for up to ~60s.           |
 | `missing required configuration: OPENOBSERVE_PASSWORD` | Set the variable in `.env` (or rely on default).                               |
 | `401 unauthorized`                                     | Wrong credentials. The default bootstrap user only exists with a fresh volume. |
 | MCP server hangs                                       | Check that `OPENOBSERVE_URL` is reachable from the MCP server process.         |
-| Empty query results                                    | Seed data may be outside your window; use `since=24h`.                         |
+| Empty query results                                    | Seed data is from the hour before `make seed`; widen with `since=24h`.         |
 | `docker compose up -d` returns EOF                     | Docker daemon not running.                                                     |
 
 ---
@@ -161,7 +176,7 @@ The MCP layer is the only place that knows about OpenObserve.
   public ingestion (set `ZO_INGEST_ALLOWLIST` etc.).
 - Structured logs only carry `tool`, `duration_ms`, and error messages — no secrets.
 - The MCP client never sees raw OpenObserve URLs or SQL.
-- Set `MCP_LOG_FILE` to a path inside a directory with restricted permissions if you want logs kept off stderr.
+- `MCP_LOG_FILE` is created with `0600` permissions; use it if you want logs kept off stderr.
 
 ---
 

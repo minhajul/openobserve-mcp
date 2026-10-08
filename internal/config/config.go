@@ -58,6 +58,9 @@ func (c *Config) validate() error {
 	if c.OpenObserveTimeout <= 0 {
 		return fmt.Errorf("OPENOBSERVE_TIMEOUT must be > 0, got %s", c.OpenObserveTimeout)
 	}
+	if c.MCPLogLevel != "info" && c.MCPLogLevel != "debug" {
+		return fmt.Errorf("MCP_LOG_LEVEL must be \"info\" or \"debug\", got %q", c.MCPLogLevel)
+	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required configuration: %s", strings.Join(missing, ", "))
 	}

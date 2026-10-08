@@ -25,7 +25,7 @@ func TestTimeRangeWhere(t *testing.T) {
 		End:   time.UnixMicro(2_000_000),
 	}
 	w := r.Where()
-	if len(w) != 2 || w[0] != "timestamp >= 1000000" || w[1] != "timestamp <= 2000000" {
+	if len(w) != 2 || w[0] != "_timestamp >= 1000000" || w[1] != "_timestamp <= 2000000" {
 		t.Errorf("Where() = %v", w)
 	}
 }
@@ -37,17 +37,17 @@ func TestLogsBuildUsesCoreColumns(t *testing.T) {
 		Level:   "error",
 		Limit:   5,
 		Range:   TimeRange{Start: time.UnixMicro(100), End: time.UnixMicro(200)},
-	}, FixedColumns("timestamp", "level", "service", "message"))
+	}, FixedColumns("_timestamp", "level", "service", "message"))
 	if err != nil {
 		t.Fatalf("LogsBuild: %v", err)
 	}
 	for _, want := range []string{
-		"SELECT timestamp, level, service, message FROM default",
+		`SELECT _timestamp, level, service, message FROM "default"`,
 		"service = 'api'",
 		"level = 'ERROR'",
-		"timestamp >= 100",
-		"timestamp <= 200",
-		"LIMIT 5",
+		"_timestamp >= 100",
+		"_timestamp <= 200",
+		"ORDER BY _timestamp DESC LIMIT 5",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("SQL missing %q: %q", want, sql)
@@ -60,7 +60,7 @@ func TestLogsBuildAddsOptionalColumnsFromResolver(t *testing.T) {
 		Stream: "default",
 		Limit:  10,
 		Range:  TimeRange{Start: time.UnixMicro(100), End: time.UnixMicro(200)},
-	}, FixedColumns("timestamp", "level", "service", "message", "status", "duration_ms"))
+	}, FixedColumns("_timestamp", "level", "service", "message", "status", "duration_ms"))
 	if err != nil {
 		t.Fatalf("LogsBuild: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestLogsBuildFallsBackOnResolverError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LogsBuild should not propagate resolver errors: %v", err)
 	}
-	if !strings.Contains(sql, "SELECT timestamp FROM default") {
+	if !strings.Contains(sql, `SELECT _timestamp, level, service, message FROM "default"`) {
 		t.Errorf("fallback SQL unexpected: %q", sql)
 	}
 }
@@ -102,7 +102,7 @@ func TestAggregateLogsBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AggregateLogsBuild: %v", err)
 	}
-	want := "SELECT service AS g, count(*) AS c FROM default WHERE timestamp >= 100 AND timestamp <= 200 AND level = 'ERROR' GROUP BY service"
+	want := `SELECT service AS g, count(*) AS c FROM "default" WHERE _timestamp >= 100 AND _timestamp <= 200 AND level = 'ERROR' GROUP BY service ORDER BY c DESC LIMIT 1000`
 	if sql != want {
 		t.Errorf("got %q, want %q", sql, want)
 	}
@@ -118,7 +118,7 @@ func TestTracesBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TracesBuild: %v", err)
 	}
-	if !strings.Contains(sql, "FROM traces WHERE timestamp >= 1 AND timestamp <= 2 AND service = 'api'") {
+	if !strings.Contains(sql, `FROM "traces" WHERE _timestamp >= 1 AND _timestamp <= 2 AND service = 'api'`) {
 		t.Errorf("SQL unexpected: %q", sql)
 	}
 	if !strings.HasSuffix(sql, "LIMIT 3") {
@@ -139,7 +139,7 @@ func TestMetricsBuildDefaultsAndPercentile(t *testing.T) {
 	}
 	for _, want := range []string{
 		"metric_name = 'http_requests_total'",
-		"approx_percentile(value, 95) AS value",
+		"approx_percentile_cont(value, 0.95) AS value",
 		"LIMIT 7",
 	} {
 		if !strings.Contains(sql, want) {
@@ -153,13 +153,14 @@ func TestMetricsBuildAllAggregations(t *testing.T) {
 		agg   string
 		match string
 	}{
-		{"avg", "AVG(value) AS value"},
-		{"sum", "SUM(value) AS value"},
-		{"count", "COUNT(value) AS value"},
-		{"max", "MAX(value) AS value"},
-		{"min", "MIN(value) AS value"},
-		{"p95", "approx_percentile(value, 95) AS value"},
-		{"p99", "approx_percentile(value, 99) AS value"},
+		{"avg", "avg(value) AS value"},
+		{"sum", "sum(value) AS value"},
+		{"count", "count(value) AS value"},
+		{"max", "max(value) AS value"},
+		{"min", "min(value) AS value"},
+		{"p50", "approx_percentile_cont(value, 0.5) AS value"},
+		{"p95", "approx_percentile_cont(value, 0.95) AS value"},
+		{"p99", "approx_percentile_cont(value, 0.99) AS value"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.agg, func(t *testing.T) {
@@ -184,7 +185,7 @@ func TestLogsBuildOmitsOptionalColumnNotInSchema(t *testing.T) {
 		Stream: "default",
 		Limit:  1,
 		Range:  TimeRange{Start: time.UnixMicro(1), End: time.UnixMicro(2)},
-	}, FixedColumns("timestamp", "level", "service", "message"))
+	}, FixedColumns("_timestamp", "level", "service", "message"))
 	if err != nil {
 		t.Fatalf("LogsBuild: %v", err)
 	}
@@ -237,6 +238,89 @@ func TestTracesBuildMinDuration(t *testing.T) {
 	}
 	if !strings.Contains(sql, "duration >= 5000") {
 		t.Errorf("min duration filter missing: %q", sql)
+	}
+}
+
+func TestBuildersRejectUnsafeIdentifiers(t *testing.T) {
+	rng := TimeRange{Start: time.UnixMicro(1), End: time.UnixMicro(2)}
+	cases := map[string]func() error{
+		"logs stream": func() error {
+			_, _, err := LogsBuild(context.Background(), SearchLogsRequest{Stream: "x; DROP", Range: rng}, nil)
+			return err
+		},
+		"metrics group_by": func() error {
+			_, _, err := MetricsBuild(context.Background(), QueryMetricsRequest{Stream: "metrics", MetricName: "m", GroupBy: []string{"service) FROM x --"}, Range: rng})
+			return err
+		},
+		"metrics aggregation": func() error {
+			_, _, err := MetricsBuild(context.Background(), QueryMetricsRequest{Stream: "metrics", MetricName: "m", Aggregation: "sum(value)) --", Range: rng})
+			return err
+		},
+		"aggregate group_by": func() error {
+			_, _, err := AggregateLogsBuild(AggregateLogsRequest{Stream: "default", GroupBy: "a,b", Range: rng})
+			return err
+		},
+		"traces stream": func() error {
+			_, _, err := TracesBuild(context.Background(), SearchTracesRequest{Stream: "t r", Range: rng})
+			return err
+		},
+		"logs level": func() error {
+			_, _, err := LogsBuild(context.Background(), SearchLogsRequest{Stream: "default", Level: "x' OR '1'='1", Range: rng}, nil)
+			return err
+		},
+	}
+	for name, fn := range cases {
+		if fn() == nil {
+			t.Errorf("%s: expected rejection", name)
+		}
+	}
+}
+
+func TestMetricsBuildGroupBy(t *testing.T) {
+	sql, _, err := MetricsBuild(context.Background(), QueryMetricsRequest{
+		Stream: "metrics", MetricName: "cpu_usage", Aggregation: "max",
+		GroupBy: []string{"service", "host"},
+		Range:   TimeRange{Start: time.UnixMicro(1), End: time.UnixMicro(2)},
+	})
+	if err != nil {
+		t.Fatalf("MetricsBuild: %v", err)
+	}
+	want := `SELECT service, host, max(value) AS value FROM "metrics" WHERE metric_name = 'cpu_usage' AND _timestamp >= 1 AND _timestamp <= 2 GROUP BY service, host ORDER BY value DESC LIMIT 100`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+}
+
+func TestLogsBuildOrderByDuration(t *testing.T) {
+	sql, _, err := LogsBuild(context.Background(), SearchLogsRequest{
+		Stream: "default", OrderBy: OrderByDuration, MinDurationMS: 1000,
+		Range: TimeRange{Start: time.UnixMicro(1), End: time.UnixMicro(2)},
+	}, nil)
+	if err != nil {
+		t.Fatalf("LogsBuild: %v", err)
+	}
+	if !strings.Contains(sql, "duration_ms >= 1000 ORDER BY duration_ms DESC") {
+		t.Errorf("slow-request ordering missing: %q", sql)
+	}
+}
+
+func TestLimitsAreClamped(t *testing.T) {
+	sql, _, err := TracesBuild(context.Background(), SearchTracesRequest{Stream: "traces", Limit: 50000})
+	if err != nil {
+		t.Fatalf("TracesBuild: %v", err)
+	}
+	if !strings.HasSuffix(sql, "LIMIT 1000") {
+		t.Errorf("limit not clamped: %q", sql)
+	}
+}
+
+func TestTracesBuildByTraceIDIsChronological(t *testing.T) {
+	sql, _, err := TracesBuild(context.Background(), SearchTracesRequest{Stream: "traces", TraceID: "abc"})
+	if err != nil {
+		t.Fatalf("TracesBuild: %v", err)
+	}
+	if !strings.Contains(sql, "ORDER BY _timestamp ASC") {
+		t.Errorf("trace lookup should be ascending: %q", sql)
 	}
 }
 
